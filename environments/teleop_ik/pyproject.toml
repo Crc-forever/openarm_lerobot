@@ -1,0 +1,21 @@
+[project]
+name = "openarm-teleop-ik-env"
+version = "0.1.0"
+description = "Reproducible Pico TeleopXR and PyRoki IK runtime"
+requires-python = "==3.12.*"
+dependencies = [
+  "jax[cuda12]==0.6.2",
+  "jaxlib==0.6.2",
+  "numpy==2.2.6",
+  "teleop-xr[cuda,ik]",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[tool.uv.sources]
+teleop-xr = { git = "https://github.com/qrafty-ai/teleop_xr.git", tag = "v1.3.5" }
+pyroki = { git = "https://github.com/chungmin99/pyroki.git", rev = "388e43e1fc0d0ee382968d3dd72970fd62a0450c" }
+ballpark = { git = "https://github.com/chungmin99/ballpark.git", rev = "0069623c5201c5caecb231c35bec7771249ee786" }
+jaxls = { git = "https://github.com/brentyi/jaxls.git", rev = "50a58be88c5ef74532f09e3f55268b4f02c490e3" }

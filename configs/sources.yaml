@@ -1,0 +1,12 @@
+# External source revisions used by the runtime.
+# Never fetch a floating branch such as `main` during robot startup.
+
+openarm_description:
+  repository: https://github.com/enactic/openarm_description.git
+  revision: 1ce68f874e87f90af92db3b469cd7b7012fb15e2
+  release: 1.0.4
+  bimanual_xacro: urdf/robot/v10.urdf.xacro
+  xacro_arguments:
+    bimanual: "true"
+    hand: "true"
+    ros2_control: "false"
