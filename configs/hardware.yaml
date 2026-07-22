@@ -1,0 +1,46 @@
+# Hardware baseline migrated from the existing working OpenArm system.
+# Values in this file describe physical bus and motor identity only.
+
+robot:
+  name: openarm_bimanual
+  arms: [left, right]
+  arm_dof: 7
+  gripper_dof: 1
+
+can:
+  protocol: socketcan
+  fd: true
+  bitrate: 1000000
+  data_bitrate: 5000000
+  tx_queue_length: 1000
+
+arms:
+  left:
+    interface: can0
+    joints:
+      - {name: joint1, motor: DM8009, send_id: 0x01, receive_id: 0x11}
+      - {name: joint2, motor: DM8009, send_id: 0x02, receive_id: 0x12}
+      - {name: joint3, motor: DM4340, send_id: 0x03, receive_id: 0x13}
+      - {name: joint4, motor: DM4340, send_id: 0x04, receive_id: 0x14}
+      - {name: joint5, motor: DM4310, send_id: 0x05, receive_id: 0x15}
+      - {name: joint6, motor: DM4310, send_id: 0x06, receive_id: 0x16}
+      - {name: joint7, motor: DM4310, send_id: 0x07, receive_id: 0x17}
+      - {name: gripper, motor: DM4310, send_id: 0x08, receive_id: 0x18}
+
+  right:
+    interface: can1
+    joints:
+      - {name: joint1, motor: DM8009, send_id: 0x01, receive_id: 0x11}
+      - {name: joint2, motor: DM8009, send_id: 0x02, receive_id: 0x12}
+      - {name: joint3, motor: DM4340, send_id: 0x03, receive_id: 0x13}
+      - {name: joint4, motor: DM4340, send_id: 0x04, receive_id: 0x14}
+      - {name: joint5, motor: DM4310, send_id: 0x05, receive_id: 0x15}
+      - {name: joint6, motor: DM4310, send_id: 0x06, receive_id: 0x16}
+      - {name: joint7, motor: DM4310, send_id: 0x07, receive_id: 0x17}
+      - {name: gripper, motor: DM4310, send_id: 0x08, receive_id: 0x18}
+
+# Deliberately deferred until calibration/model migration:
+# - OpenArm mechanical/URDF revision
+# - joint directions and zero offsets
+# - joint and gripper limits
+# - controller gains and control mode

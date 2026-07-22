@@ -1,0 +1,38 @@
+# Pico/TeleopXR input baseline migrated from the existing working system.
+
+server:
+  host: 0.0.0.0
+  port: 4443
+  input_mode: controller
+
+xr:
+  requested_update_rate_hz: 100
+  source_coordinate_frame: RUB
+  output_coordinate_frame: FLU
+  rub_to_flu:
+    - [0, 0, -1, 0]
+    - [-1, 0, 0, 0]
+    - [0, 1, 0, 0]
+    - [0, 0, 0, 1]
+  controller_pose_field: gripPose
+  timestamp_field: timestamp_unix_ms
+  required_hands: [left, right]
+
+controls:
+  deadman:
+    button_index: 1
+    button_name: squeeze
+    engagement: both_pressed
+    motion_mapping: relative_from_engagement_snapshot
+  gripper:
+    button_index: 0
+    button_name: trigger
+    value_field: value
+    close_threshold: 0.5
+
+# Deliberately deferred until the new transport and safety layer are designed:
+# - stale-input timeout
+# - tracking-loss state mapping
+# - reconnect/relocalization behavior
+# - pose filter parameters
+# - Pico-to-robot workspace scale and calibration
