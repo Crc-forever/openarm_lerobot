@@ -30,8 +30,27 @@ controls:
     value_field: value
     close_threshold: 0.5
 
-# Deliberately deferred until the new transport and safety layer are designed:
-# - stale-input timeout
+lerobot:
+  robot_type: bi_openarm_follower
+  joint_input_unit: radians
+  action_unit: degrees
+  gripper_open_deg: -60.0
+  gripper_closed_deg: -10.0
+  max_relative_target_deg: 2.0
+  hardware_requires_explicit_start_mode: robot
+
+recording:
+  format: lerobot_dataset
+  root: data
+  fps: 30
+  task: OpenArm VR teleoperation
+  episode_boundary: one_process_run
+  fields:
+    - observation.state
+    - observation.images.*
+    - action
+
+# Deliberately deferred until low-speed hardware validation:
 # - tracking-loss state mapping
 # - reconnect/relocalization behavior
 # - pose filter parameters

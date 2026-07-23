@@ -1,10 +1,32 @@
 # External source revisions used by the runtime.
 # Never fetch a floating branch such as `main` during robot startup.
 
+teleop_xr:
+  repository: https://github.com/qrafty-ai/teleop_xr.git
+  snapshot_version: 1.3.6.dev3
+  source_snapshot: openarm_ws@8f94d23b8dea62998773b3b660c68e221c652662
+  local_path: teleop_xr
+  note: Migrated from the previously working openarm_ws copy.
+
+pyroki:
+  repository: https://github.com/chungmin99/pyroki.git
+  source_snapshot: openarm_ws@8f94d23b8dea62998773b3b660c68e221c652662
+  upstream_revision: unverified
+  local_path: pyroki
+
+jaxls:
+  repository: https://github.com/brentyi/jaxls.git
+  revision: 50a58be88c5ef74532f09e3f55268b4f02c490e3
+
+ballpark:
+  repository: https://github.com/chungmin99/ballpark.git
+  revision: 0069623c5201c5caecb231c35bec7771249ee786
+
 openarm_description:
   repository: https://github.com/enactic/openarm_description.git
   revision: 1ce68f874e87f90af92db3b469cd7b7012fb15e2
   release: 1.0.4
+  local_path: openarm_description
   bimanual_xacro: urdf/robot/v10.urdf.xacro
   xacro_arguments:
     bimanual: "true"

@@ -1,41 +1,93 @@
-# OpenArm LeRobot
+# OpenArm
 
-OpenArm 双臂 VR 遥操、数据采集与策略部署的新主线工程。
+双臂 OpenArm 的 Pico VR 遥操作、LeRobot 数据采集和训练工程。
 
-## 目标
-
-- Pico VR 通过 TeleopXR 提供左右手位姿和按键输入。
-- PyRoki 使用 OpenArm 模型求解双臂逆运动学。
-- LeRobot 统一负责机械臂驱动、状态、相机、数据集、训练和推理。
-- VR 遥操与模型推理共用同一套动作格式和安全控制入口。
-
-## 工程边界
-
-- `Openarm_lerobot/` 是今后的新主线。
-- `../openarm_ws/` 是旧工程，只用于迁移已验证的标定、CAN 配置、IK 映射和安全参数。
-- 新主线不直接修改或删除旧工程文件。
-
-## 目标数据流
+## 架构
 
 ```text
-Pico VR
+Pico
   -> TeleopXR
-  -> 位姿处理
-  -> PyRoki IK
-  -> 统一动作与安全层
-  -> LeRobot OpenArm 驱动
-  -> SocketCAN (can0 / can1)
-  -> OpenArm 双臂
+  -> OpenArm 双臂 IK（PyRoki）
+  -> LeRobot
+  -> can0 / can1
+  -> 左右机械臂
 ```
 
+项目只使用一个 Python 环境。TeleopXR、PyRoki 和 OpenArm 模型源码随
+项目保存；LeRobot 使用固定版本安装。
+
+## 目录
+
 ```text
-相机 + 机械臂实际状态 + 最终下发动作
-  -> LeRobot Dataset
-  -> 策略训练
-  -> 策略推理
-  -> 同一安全控制入口
+Openarm_lerobot/
+├── teleop_xr/           # Pico 接收、手柄映射和双臂 IK 源码
+├── pyroki/              # IK 求解器源码
+├── openarm_description/ # OpenArm URDF、Xacro 和网格
+├── configs/             # 硬件和遥操作配置
+└── scripts/             # 安装和启动入口
 ```
+
+## 安装
+
+在新电脑上执行一次：
+
+```bash
+./scripts/install.sh
+```
+
+脚本创建名为 `lerobot` 的唯一 Conda 环境，安装固定版本的 LeRobot，
+并从本项目目录安装 TeleopXR。源码修改后不需要重新复制。
+
+当前默认不安装 PyRoki/JAX。需要启用 IK 时执行：
+
+```bash
+./scripts/install.sh --with-ik
+```
+
+该选项安装 CPU 版 JAX，不安装 CUDA，也不修改显卡驱动。
+
+## 启动
+
+Pico 连接方法：
+
+- [Pico USB 有线连接说明](docs/PICO有线连接说明.md)（优先）；
+- [Pico Wi-Fi 连接说明](docs/PICO连接说明.md)。
+
+数据采集方法见：[LeRobot 数据采集说明](docs/数据采集说明.md)。
+
+只启动 Pico/TeleopXR：
+
+```bash
+./scripts/start.sh teleop
+```
+
+IK 环境准备好以后：
+
+```bash
+./scripts/start.sh ik
+```
+
+此命令运行完整的 `Pico -> IK -> LeRobot action` 离线链路，不访问 CAN。
+
+真机入口为：
+
+```bash
+./scripts/start.sh robot
+```
+
+`robot` 会连接 `can0/can1` 并使能电机。当前阶段不要执行；应先完成低速、
+急停和方向核对。
 
 ## 当前状态
 
-工程正在搭建中。依赖版本、目录模块和真机接口将在后续步骤中逐项确定。
+- TeleopXR源码、PyRoki源码和OpenArm模型已经迁入新项目；
+- TeleopXR基础服务可以独立启动；
+- CPU版IK依赖已经安装；
+- IK输出已转换为LeRobot双臂OpenArm标准action；
+- 离线完整链路已经启动验证；
+- LeRobot数据采集已接入VR动作并通过模拟帧验证；
+- 当前相机尚未配置；
+- `teleop`和`ik`不会访问CAN或使能电机；
+- 只有显式执行`start.sh robot`才会连接真机。
+
+旧工程 `../openarm_ws/` 保留不动，仅用于核对已经验证的映射、滤波和硬件参数。

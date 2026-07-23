@@ -1,0 +1,10 @@
+<Panel>
+  <Text>Hello, Immersive Web!</Text>
+  <Text>Explore locomotion, grab interactions, spatial UI panel and more - start building for the immersive web with Immersive Web SDK today.</Text>
+  <Button id="xr-button">
+    <ButtonIcon>
+      <LogInIcon />
+    </ButtonIcon>
+    <Text>Enter XR</Text>
+  </Button>
+</Panel>

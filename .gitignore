@@ -1,5 +1,6 @@
 # Python environments and bytecode
 **/.venv/
+*.egg-info/
 **/__pycache__/
 *.py[cod]
 *.so
@@ -25,6 +26,8 @@ htmlcov/
 !.env.example
 *.key
 *.pem
+!teleop_xr/teleop_xr/key.pem
+!teleop_xr/teleop_xr/cert.pem
 
 # Runtime artifacts
 logs/
@@ -51,3 +54,9 @@ wandb/
 tmp/
 *.pid
 *.sock
+
+# Vendored frontend build dependencies and generated output
+teleop_xr/webxr/node_modules/
+teleop_xr/webxr/.next/
+teleop_xr/webxr/out/
+data/
