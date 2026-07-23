@@ -1,0 +1,53 @@
+# Python environments and bytecode
+**/.venv/
+**/__pycache__/
+*.py[cod]
+*.so
+
+# Test, lint, type-check, and coverage caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local tooling and editor state
+.cache/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Secrets and machine-local environment files
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Runtime artifacts
+logs/
+outputs/
+recordings/
+datasets/
+checkpoints/
+wandb/
+*.log
+*.bag
+*.db3
+*.mcap
+
+# Large generated media and model artifacts
+*.mp4
+*.avi
+*.parquet
+*.safetensors
+*.pt
+*.pth
+*.onnx
+
+# Temporary runtime communication
+tmp/
+*.pid
+*.sock
