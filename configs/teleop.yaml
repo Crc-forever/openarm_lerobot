@@ -38,11 +38,29 @@ lerobot:
   gripper_closed_deg: -10.0
   max_relative_target_deg: 2.0
   hardware_requires_explicit_start_mode: robot
+  control:
+    # Cap the motion accumulated after a delayed control frame.
+    max_dt_s: 0.05
+    # Disable both arms if active Pico actions or motor feedback stop.
+    input_timeout_s: 0.25
+    feedback_timeout_s: 0.25
+    # Conservative initial values. Tune on the real arm joint by joint.
+    joints:
+      joint_1: {kp: 50.0, kd: 2.0, max_velocity_deg_s: 8.0, max_acceleration_deg_s2: 20.0}
+      joint_2: {kp: 68.0, kd: 2.0, max_velocity_deg_s: 8.0, max_acceleration_deg_s2: 20.0}
+      joint_3: {kp: 40.0, kd: 1.5, max_velocity_deg_s: 12.0, max_acceleration_deg_s2: 30.0}
+      joint_4: {kp: 60.0, kd: 2.0, max_velocity_deg_s: 12.0, max_acceleration_deg_s2: 30.0}
+      joint_5: {kp: 35.0, kd: 1.0, max_velocity_deg_s: 18.0, max_acceleration_deg_s2: 45.0}
+      joint_6: {kp: 50.0, kd: 1.0, max_velocity_deg_s: 18.0, max_acceleration_deg_s2: 45.0}
+      joint_7: {kp: 50.0, kd: 1.0, max_velocity_deg_s: 18.0, max_acceleration_deg_s2: 45.0}
+      gripper: {kp: 25.0, kd: 0.5, max_velocity_deg_s: 30.0, max_acceleration_deg_s2: 90.0}
 
 recording:
   format: lerobot_dataset
   root: data
-  fps: 30
+  # The current dual-arm feedback loop sustains about 17-20 Hz. Labeling a
+  # slower stream as 30 FPS would make LeRobot replay/training time incorrect.
+  fps: 20
   task: OpenArm VR teleoperation
   episode_boundary: one_process_run
   fields:

@@ -2,6 +2,8 @@
 
 双臂 OpenArm 的 Pico VR 遥操作、LeRobot 数据采集和训练工程。
 
+项目后续工作统一记录在：[TODO.md](TODO.md)。
+
 ## 架构
 
 ```text
@@ -53,6 +55,7 @@ Pico 连接方法：
 - [Pico USB 有线连接说明](docs/PICO有线连接说明.md)（优先）；
 - [Pico USB 本机投屏](docs/PICO本机投屏说明.md)；
 - [Pico Wi-Fi 连接说明](docs/PICO连接说明.md)。
+- [OpenArm 真机 VR 操作步骤](docs/操作步骤.md)。
 
 数据采集方法见：[LeRobot 数据采集说明](docs/数据采集说明.md)。
 
@@ -78,6 +81,12 @@ IK 环境准备好以后：
 
 `robot` 会连接 `can0/can1` 并使能电机。当前阶段不要执行；应先完成低速、
 急停和方向核对。
+
+只读检查左右臂电机反馈，不使能电机、不发送动作：
+
+```bash
+conda run --no-capture-output -n lerobot python scripts/check_feedback.py
+```
 
 ## 当前状态
 

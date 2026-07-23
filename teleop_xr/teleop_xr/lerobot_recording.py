@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+
+_STOP_WRITER = object()
 
 
 class LeRobotEpisodeRecorder:
@@ -38,6 +43,12 @@ class LeRobotEpisodeRecorder:
         self.next_frame_time = time.monotonic()
         self.frame_count = 0
         self.closed = False
+        self.worker_error: BaseException | None = None
+        self._accepting = True
+        self._state_lock = threading.Lock()
+        self._frames: queue.Queue[
+            tuple[dict[str, Any], dict[str, Any]] | object
+        ] = queue.Queue(maxsize=max(2, fps))
 
         session_name = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.root = Path(root).expanduser().resolve() / session_name
@@ -63,9 +74,18 @@ class LeRobotEpisodeRecorder:
             image_writer_threads=2 if has_cameras else 0,
         )
         logging.getLogger(__name__).info("Dataset session: %s", self.root)
+        self._writer = threading.Thread(
+            target=self._write_loop,
+            name="lerobot-dataset-writer",
+            daemon=True,
+        )
+        self._writer.start()
 
     def is_due(self, now: float | None = None) -> bool:
         """Return whether the next synchronized frame should be captured."""
+        with self._state_lock:
+            if self.closed or not self._accepting:
+                return False
         current = time.monotonic() if now is None else now
         if current < self.next_frame_time:
             return False
@@ -74,8 +94,31 @@ class LeRobotEpisodeRecorder:
 
     def add_frame(
         self, observation: dict[str, Any], sent_action: dict[str, Any]
+    ) -> bool:
+        """Queue one frame without ever blocking the CAN output worker."""
+        with self._state_lock:
+            if self.closed or not self._accepting:
+                return False
+        try:
+            self._frames.put_nowait(
+                (dict(observation), dict(sent_action))
+            )
+        except queue.Full:
+            self._latch_error(
+                RuntimeError(
+                    "dataset writer queue is full; recording stopped "
+                    "to protect the CAN control loop"
+                )
+            )
+            return False
+        return True
+
+    def _write_frame(
+        self,
+        observation: dict[str, Any],
+        sent_action: dict[str, Any],
     ) -> None:
-        """Add feedback/camera observation and the action actually sent."""
+        """Write one already-synchronized frame from the writer thread."""
         from lerobot.utils.constants import ACTION, OBS_STR
         from lerobot.utils.feature_utils import build_dataset_frame
 
@@ -90,17 +133,56 @@ class LeRobotEpisodeRecorder:
         )
         self.frame_count += 1
 
+    def _write_loop(self) -> None:
+        try:
+            while True:
+                item = self._frames.get()
+                if item is _STOP_WRITER:
+                    return
+                observation, sent_action = item
+                self._write_frame(observation, sent_action)
+        except BaseException as exc:
+            self._latch_error(exc)
+
+    def _latch_error(self, exc: BaseException) -> None:
+        with self._state_lock:
+            if self.worker_error is not None:
+                return
+            self.worker_error = exc
+            self._accepting = False
+        logging.getLogger(__name__).error(
+            "LeRobot dataset recording stopped: %s",
+            exc,
+        )
+
     def close(self, save_episode: bool = True) -> None:
         """Save the current episode and finalize all dataset writers."""
-        if self.closed:
+        with self._state_lock:
+            if self.closed:
+                return
+            self.closed = True
+            self._accepting = False
+
+        if self._writer.is_alive():
+            try:
+                self._frames.put(_STOP_WRITER, timeout=2.0)
+            except queue.Full:
+                self._latch_error(
+                    RuntimeError("dataset writer did not drain its queue")
+                )
+            self._writer.join(timeout=5.0)
+        if self._writer.is_alive():
+            logging.getLogger(__name__).critical(
+                "Dataset writer did not stop; skipping concurrent finalization"
+            )
             return
+
         try:
             if self.dataset.has_pending_frames():
-                if save_episode:
+                if save_episode and self.worker_error is None:
                     self.dataset.save_episode()
                 else:
                     self.dataset.clear_episode_buffer()
         finally:
             self.dataset.finalize()
             self.closed = True
-

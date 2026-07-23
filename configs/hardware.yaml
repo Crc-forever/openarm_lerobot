@@ -9,10 +9,16 @@ robot:
 
 can:
   protocol: socketcan
+  # The Linux interface remains FD-capable, but the deployed DaMiao command
+  # path deliberately uses classic 8-byte CAN 2.0 frames. This matches the
+  # previously stable Python bridge and avoids LeRobot 0.6.0's FD-without-BRS
+  # frame construction.
   fd: true
+  motor_frame_format: classic
   bitrate: 1000000
   data_bitrate: 5000000
   tx_queue_length: 1000
+  restart_ms: 100
 
 arms:
   left:

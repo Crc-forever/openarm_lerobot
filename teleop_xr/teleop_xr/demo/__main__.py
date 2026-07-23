@@ -5,6 +5,7 @@ import threading
 import json
 import sys
 import os
+import signal
 import select
 import numpy as np
 import tyro
@@ -109,7 +110,7 @@ class DemoCLI(CommonCLI):
     dataset_task: str = "OpenArm VR teleoperation"
     """Natural-language task stored with every frame."""
 
-    dataset_fps: int = 30
+    dataset_fps: int = 20
     """Target dataset frame rate."""
 
 
@@ -426,6 +427,7 @@ class IKWorker(threading.Thread):
         self.running = True
         self.teleop_loop = None  # Will be set when on_xr_update runs
         self._worker_lock = threading.Lock()
+        self._output_faulted = False
 
     def update_state(self, state: XRState):
         """Thread-safe update of the latest state."""
@@ -470,6 +472,8 @@ class IKWorker(threading.Thread):
             state = self.latest_xr_state
             if state is None:
                 continue
+            if self._output_faulted:
+                continue
 
             # Capture triggers for gripper control (from VR SDK callback)
             for dev in state.devices:
@@ -498,6 +502,9 @@ class IKWorker(threading.Thread):
                         self.logger.info(
                             f"Init XR: {list(self.controller.snapshot_xr.keys())}"
                         )
+                    elif was_active and not is_active:
+                        if self.action_output is not None:
+                            self.action_output.hold()
 
                     if self.action_output is not None and is_active:
                         self.action_output.submit(
@@ -543,7 +550,21 @@ class IKWorker(threading.Thread):
                     last_freq_log = now
 
             except Exception as e:
-                self.logger.error(f"Error in IK Worker: {e}")
+                output_error = (
+                    self.action_output.worker_error
+                    if self.action_output is not None
+                    else None
+                )
+                if output_error is not None:
+                    self._output_faulted = True
+                    self.controller.reset()
+                    self.state_container["active"] = False
+                    self.logger.error(
+                        "OpenArm output faulted and is latched until restart: "
+                        f"{output_error}"
+                    )
+                else:
+                    self.logger.error(f"Error in IK Worker: {e}")
 
     def reload_robot_in_place(
         self, replacement: "BaseRobot"
@@ -729,12 +750,65 @@ def run_right_ee_absolute_demo(
 def main():
     cli = tyro.cli(DemoCLI)
 
+    # Terminal stop buttons commonly send SIGTERM or SIGHUP instead of
+    # Ctrl+C. Convert both into Python's normal cleanup path.
+    def request_safe_shutdown(_signum, _frame):
+        raise KeyboardInterrupt
+
+    if cli.hardware:
+        signal.signal(signal.SIGTERM, request_safe_shutdown)
+        if hasattr(signal, "SIGHUP"):
+            signal.signal(signal.SIGHUP, request_safe_shutdown)
+
     if cli.hardware and not cli.lerobot:
         raise SystemExit("--hardware must be used together with --lerobot")
     if cli.lerobot and cli.mode != "ik":
         raise SystemExit("--lerobot requires --mode ik")
     if cli.record and not cli.hardware:
         raise SystemExit("--record requires --hardware for motor feedback")
+
+    # Refuse before importing IK or opening CAN if another server/process owns
+    # this hardware session. Previously a second process could connect CAN and
+    # only then discover that port 4443 belonged to the first process.
+    _hardware_guard = None
+    if cli.hardware:
+        import fcntl
+        import socket
+
+        lock_path = f"/tmp/openarm_lerobot_{os.getuid()}.lock"
+        flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        lock_fd = os.open(lock_path, flags, 0o600)
+        _hardware_guard = os.fdopen(lock_fd, "r+", encoding="utf-8")
+        try:
+            fcntl.flock(
+                _hardware_guard.fileno(),
+                fcntl.LOCK_EX | fcntl.LOCK_NB,
+            )
+        except BlockingIOError as exc:
+            owner = _hardware_guard.read().strip() or "unknown process"
+            _hardware_guard.close()
+            raise SystemExit(
+                "Another OpenArm hardware process is already running "
+                f"({owner}). Stop it before starting a new one."
+            ) from exc
+
+        _hardware_guard.seek(0)
+        _hardware_guard.truncate()
+        _hardware_guard.write(
+            f"pid={os.getpid()} host={cli.host} port={cli.port}\n"
+        )
+        _hardware_guard.flush()
+        try:
+            with socket.create_server((cli.host, cli.port)):
+                pass
+        except OSError as exc:
+            _hardware_guard.close()
+            raise SystemExit(
+                f"Server port {cli.host}:{cli.port} is already in use. "
+                "CAN was not opened; stop the old TeleopXR process first."
+            ) from exc
 
     # Configure JAX only if in IK mode
     if cli.mode == "ik":
