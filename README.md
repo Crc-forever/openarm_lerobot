@@ -51,6 +51,7 @@ Openarm_lerobot/
 Pico 连接方法：
 
 - [Pico USB 有线连接说明](docs/PICO有线连接说明.md)（优先）；
+- [Pico USB 本机投屏](docs/PICO本机投屏说明.md)；
 - [Pico Wi-Fi 连接说明](docs/PICO连接说明.md)。
 
 数据采集方法见：[LeRobot 数据采集说明](docs/数据采集说明.md)。
