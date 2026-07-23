@@ -451,7 +451,7 @@ class LeRobotOpenArmOutput:
             )
 
     def _validate_can_interfaces(self) -> None:
-        """Require two healthy 1M/5M FD links with bus-off recovery."""
+        """Require two healthy 1M/5M FD links and report recovery capability."""
         if self.left_port == self.right_port:
             raise RuntimeError(
                 "left and right arms must use different CAN interfaces"
@@ -499,9 +499,13 @@ class LeRobotOpenArmOutput:
                 int(restart_match.group(1)) if restart_match is not None else 0
             )
             if restart_ms < 100:
-                raise RuntimeError(
-                    f"{port} restart-ms is {restart_ms}; expected at least 100. "
-                    "Run scripts/setup_can.sh before hardware mode"
+                logging.getLogger(__name__).warning(
+                    "%s does not provide automatic BUS-OFF recovery "
+                    "(restart-ms=%d). A BUS-OFF fault will stop control; "
+                    "physically cut motor power and run scripts/setup_can.sh "
+                    "before restarting.",
+                    port,
+                    restart_ms,
                 )
 
     @staticmethod

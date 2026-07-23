@@ -18,7 +18,9 @@ can:
   bitrate: 1000000
   data_bitrate: 5000000
   tx_queue_length: 1000
-  restart_ms: 100
+  # DM-USB2FDCAN/gs_usb on this machine rejects automatic BUS-OFF restart.
+  restart_ms: 0
+  bus_off_recovery: manual
 
 arms:
   left:
