@@ -25,11 +25,13 @@ class LeRobotEpisodeRecorder:
         repo_id: str,
         task: str,
         fps: int,
+        camera_source: Any | None = None,
     ) -> None:
         if fps <= 0:
             raise ValueError("Dataset FPS must be positive")
 
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
+        from lerobot.configs import DepthEncoderConfig
         from lerobot.utils.constants import ACTION, OBS_STR
         from lerobot.utils.feature_utils import (
             combine_feature_dicts,
@@ -37,6 +39,7 @@ class LeRobotEpisodeRecorder:
         )
 
         self.robot = robot
+        self.camera_source = camera_source
         self.task = task
         self.fps = fps
         self.period_s = 1.0 / fps
@@ -52,13 +55,22 @@ class LeRobotEpisodeRecorder:
 
         session_name = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.root = Path(root).expanduser().resolve() / session_name
+        observation_features = dict(robot.observation_features)
+        if camera_source is not None:
+            observation_features.update(camera_source.observation_features)
         has_cameras = any(
             isinstance(feature, tuple)
-            for feature in robot.observation_features.values()
+            for feature in observation_features.values()
+        )
+        has_depth = any(
+            isinstance(feature, tuple)
+            and len(feature) == 3
+            and feature[2] == 1
+            for feature in observation_features.values()
         )
         features = combine_feature_dicts(
             hw_to_dataset_features(
-                robot.observation_features, OBS_STR, use_video=has_cameras
+                observation_features, OBS_STR, use_video=has_cameras
             ),
             hw_to_dataset_features(
                 robot.action_features, ACTION, use_video=has_cameras
@@ -72,7 +84,16 @@ class LeRobotEpisodeRecorder:
             features=features,
             use_videos=has_cameras,
             image_writer_threads=2 if has_cameras else 0,
+            depth_encoder=(
+                DepthEncoderConfig(depth_min=0.0, depth_max=4.0)
+                if has_depth
+                else None
+            ),
         )
+        if camera_source is not None:
+            camera_source.write_metadata(
+                self.root / "meta" / "openarm_cameras.json"
+            )
         logging.getLogger(__name__).info("Dataset session: %s", self.root)
         self._writer = threading.Thread(
             target=self._write_loop,
@@ -99,9 +120,16 @@ class LeRobotEpisodeRecorder:
         with self._state_lock:
             if self.closed or not self._accepting:
                 return False
+        frame_observation = dict(observation)
+        if self.camera_source is not None:
+            try:
+                frame_observation.update(self.camera_source.snapshot())
+            except BaseException as exc:
+                self._latch_error(exc)
+                return False
         try:
             self._frames.put_nowait(
-                (dict(observation), dict(sent_action))
+                (frame_observation, dict(sent_action))
             )
         except queue.Full:
             self._latch_error(

@@ -95,8 +95,8 @@ conda run --no-capture-output -n lerobot python scripts/check_feedback.py
 - CPU版IK依赖已经安装；
 - IK输出已转换为LeRobot双臂OpenArm标准action；
 - 离线完整链路已经启动验证；
-- LeRobot数据采集已接入VR动作并通过模拟帧验证；
-- 当前相机尚未配置；
+- LeRobot数据采集已接入VR动作、真实电机反馈和最终下发action；
+- 普通外接RGB相机与Aurora930彩色/深度流已接入，并提供本机实时预览；
 - `teleop`和`ik`不会访问CAN或使能电机；
 - 只有显式执行`start.sh robot`才会连接真机。
 

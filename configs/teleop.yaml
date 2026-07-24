@@ -83,8 +83,8 @@ lerobot:
 recording:
   format: lerobot_dataset
   root: data
-  # Dataset frames remain 20 FPS even though motor interpolation runs at 100 Hz.
-  fps: 20
+  # Aurora930 runs at 15 FPS; motor interpolation remains at 100 Hz.
+  fps: 15
   task: OpenArm VR teleoperation
   episode_boundary: one_process_run
   fields:

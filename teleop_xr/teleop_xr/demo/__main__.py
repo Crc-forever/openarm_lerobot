@@ -113,6 +113,15 @@ class DemoCLI(CommonCLI):
     dataset_fps: int = 20
     """Target dataset frame rate."""
 
+    record_cameras: bool = False
+    """Record the ordinary RGB camera and Aurora RGB/depth streams."""
+
+    scene_camera_device: str = "/dev/video2"
+    """Stable V4L2 path for the ordinary external camera."""
+
+    camera_preview: bool = True
+    """Show all recording camera streams in a local OpenCV window."""
+
 
 class TUIHandler(logging.Handler):
     """Custom logging handler to send logs to a deque for TUI display."""
@@ -910,6 +919,9 @@ def main():
                 dataset_repo_id=cli.dataset_repo_id,
                 dataset_task=cli.dataset_task,
                 dataset_fps=cli.dataset_fps,
+                record_cameras=cli.record_cameras,
+                scene_camera_device=cli.scene_camera_device,
+                camera_preview=cli.camera_preview,
             )
             action_output.connect()
             state_container["q"] = np.array(

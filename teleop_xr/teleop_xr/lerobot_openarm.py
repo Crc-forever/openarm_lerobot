@@ -86,6 +86,9 @@ class LeRobotOpenArmOutput:
         dataset_repo_id: str = "local/openarm_vr",
         dataset_task: str = "OpenArm VR teleoperation",
         dataset_fps: int = 20,
+        record_cameras: bool = False,
+        scene_camera_device: str = "/dev/video2",
+        camera_preview: bool = True,
         feedback_timeout_s: float | None = None,
         input_timeout_s: float | None = None,
     ) -> None:
@@ -147,6 +150,9 @@ class LeRobotOpenArmOutput:
         self.dataset_repo_id = dataset_repo_id
         self.dataset_task = dataset_task
         self.dataset_fps = dataset_fps
+        self.record_cameras = record_cameras
+        self.scene_camera_device = scene_camera_device
+        self.camera_preview = camera_preview
         configured_feedback_timeout, configured_input_timeout = (
             load_control_timeouts(self.control_config_path)
         )
@@ -172,6 +178,7 @@ class LeRobotOpenArmOutput:
         self._worker: threading.Thread | None = None
         self._worker_error: BaseException | None = None
         self._recorder: Any | None = None
+        self._camera_capture: Any | None = None
         self._hardware_enabled = False
         self._last_feedback: dict[tuple[str, str], float] = {}
         self._feedback_misses: dict[tuple[str, str], int] = {}
@@ -228,17 +235,31 @@ class LeRobotOpenArmOutput:
             if self.record:
                 from teleop_xr.lerobot_recording import LeRobotEpisodeRecorder
 
+                if self.record_cameras:
+                    from teleop_xr.recording_cameras import (
+                        RecordingCameraCapture,
+                    )
+
+                    self._camera_capture = RecordingCameraCapture(
+                        scene_device=self.scene_camera_device,
+                        preview=self.camera_preview,
+                    )
+                    self._camera_capture.connect()
                 self._recorder = LeRobotEpisodeRecorder(
                     robot=self._robot,
                     root=self.dataset_root,
                     repo_id=self.dataset_repo_id,
                     task=self.dataset_task,
                     fps=self.dataset_fps,
+                    camera_source=self._camera_capture,
                 )
         except BaseException:
             if self._recorder is not None:
                 self._recorder.close(save_episode=False)
                 self._recorder = None
+            if self._camera_capture is not None:
+                self._camera_capture.close()
+                self._camera_capture = None
             self._disable_all_reliably()
             self._disconnect_all()
             self._robot = None
@@ -392,6 +413,9 @@ class LeRobotOpenArmOutput:
         if self._recorder is not None:
             self._recorder.close(save_episode=True)
             self._recorder = None
+        if self._camera_capture is not None:
+            self._camera_capture.close()
+            self._camera_capture = None
 
         self._disconnect_all()
         self._robot = None
@@ -479,6 +503,7 @@ class LeRobotOpenArmOutput:
                 ) = self._send_smoothed_action(latest_action)
                 if (
                     observation is not None
+                    and self._expecting_actions
                     and self._recorder is not None
                     and self._recorder.is_due()
                 ):
