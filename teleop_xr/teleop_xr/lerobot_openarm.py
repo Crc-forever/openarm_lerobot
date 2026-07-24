@@ -16,9 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from teleop_xr.openarm_safety import (
-    TimeBasedActionLimiter,
+    PT2TrajectoryPlanner,
     load_control_limits,
     load_control_timeouts,
+    load_gripper_contact_hold,
+    load_gripper_hysteresis,
+    load_gripper_positions,
+    load_pt2_trajectory_settings,
 )
 
 
@@ -73,8 +77,8 @@ class LeRobotOpenArmOutput:
         hardware: bool = False,
         left_port: str = "can0",
         right_port: str = "can1",
-        gripper_open_deg: float = -60.0,
-        gripper_closed_deg: float = -10.0,
+        gripper_open_deg: float | None = None,
+        gripper_closed_deg: float | None = None,
         max_relative_target_deg: float = 2.0,
         control_config_path: str | None = None,
         record: bool = False,
@@ -91,8 +95,6 @@ class LeRobotOpenArmOutput:
         self.hardware = hardware
         self.left_port = left_port
         self.right_port = right_port
-        self.gripper_open_deg = gripper_open_deg
-        self.gripper_closed_deg = gripper_closed_deg
         self.max_relative_target_deg = max_relative_target_deg
         default_control_config = (
             Path(__file__).resolve().parents[2] / "configs" / "teleop.yaml"
@@ -100,14 +102,46 @@ class LeRobotOpenArmOutput:
         self.control_config_path = Path(
             control_config_path or default_control_config
         )
+        configured_open_deg, configured_closed_deg = load_gripper_positions(
+            self.control_config_path
+        )
+        self.gripper_open_deg = (
+            configured_open_deg
+            if gripper_open_deg is None
+            else float(gripper_open_deg)
+        )
+        self.gripper_closed_deg = (
+            configured_closed_deg
+            if gripper_closed_deg is None
+            else float(gripper_closed_deg)
+        )
         control_limits, max_dt_s = load_control_limits(
             self.control_config_path
         )
         self._control_limits = control_limits
-        self._action_limiter = TimeBasedActionLimiter(
-            control_limits,
-            max_dt_s,
+        (
+            self.control_hz,
+            trajectory_deadband_deg,
+            trajectory_gains,
+        ) = load_pt2_trajectory_settings(
+            self.control_config_path
         )
+        self._control_period_s = 1.0 / self.control_hz
+        self._trajectory = PT2TrajectoryPlanner(
+            limits=control_limits,
+            gains=trajectory_gains,
+            deadband_deg=trajectory_deadband_deg,
+            max_dt_s=max_dt_s,
+        )
+        (
+            self.gripper_open_threshold,
+            self.gripper_close_threshold,
+        ) = load_gripper_hysteresis(self.control_config_path)
+        (
+            self.gripper_contact_hold_kp,
+            self.gripper_contact_window_deg,
+        ) = load_gripper_contact_hold(self.control_config_path)
+        self._gripper_closed = {"left": False, "right": False}
         self.record = record
         self.dataset_root = dataset_root
         self.dataset_repo_id = dataset_repo_id
@@ -144,7 +178,6 @@ class LeRobotOpenArmOutput:
         self._motor_status_codes: dict[tuple[str, str], int] = {}
         self._initial_positions: dict[str, dict[str, float]] = {}
         self._last_submit_time: float | None = None
-        self._last_hold_send: float | None = None
         self._expecting_actions = False
         self._stop_event = threading.Event()
         self._lifecycle_lock = threading.RLock()
@@ -266,8 +299,12 @@ class LeRobotOpenArmOutput:
                     raise ValueError(f"IK output is missing required joint: {ik_name}")
                 action[f"{side}_{motor_name}.pos"] = math.degrees(positions[ik_name])
 
-        action["left_gripper.pos"] = self._gripper_target(left_trigger)
-        action["right_gripper.pos"] = self._gripper_target(right_trigger)
+        action["left_gripper.pos"] = self._gripper_target(
+            "left", left_trigger
+        )
+        action["right_gripper.pos"] = self._gripper_target(
+            "right", right_trigger
+        )
         return action
 
     def submit(
@@ -363,65 +400,83 @@ class LeRobotOpenArmOutput:
             atexit.unregister(self._atexit_handler)
             self._atexit_handler = None
 
-    def _gripper_target(self, trigger: float) -> float:
+    def _gripper_target(self, side: str, trigger: float) -> float:
         value = min(1.0, max(0.0, float(trigger)))
-        return self.gripper_open_deg + value * (
-            self.gripper_closed_deg - self.gripper_open_deg
+        if self._gripper_closed[side]:
+            if value <= self.gripper_open_threshold:
+                self._gripper_closed[side] = False
+        elif value >= self.gripper_close_threshold:
+            self._gripper_closed[side] = True
+        return (
+            self.gripper_closed_deg
+            if self._gripper_closed[side]
+            else self.gripper_open_deg
         )
 
     def _send_loop(self) -> None:
+        latest_action: dict[str, float] | None = None
+        next_tick = time.monotonic()
         try:
             while not self._stop_event.is_set():
+                wait_s = max(
+                    0.0,
+                    min(0.05, next_tick - time.monotonic()),
+                )
                 try:
-                    action = self._actions.get(timeout=0.05)
+                    action = self._actions.get(timeout=wait_s)
                 except queue.Empty:
-                    if (
-                        self._hardware_enabled
-                        and self._expecting_actions
-                        and self._last_submit_time is not None
-                        and time.monotonic() - self._last_submit_time
-                        > self.input_timeout_s
-                    ):
-                        raise RuntimeError(
-                            "Pico action stream timed out while control was active"
-                        )
-                    if (
-                        self._hardware_enabled
-                        and not self._expecting_actions
-                        and self.last_sent_action is not None
-                        and (
-                            self._last_hold_send is None
-                            or time.monotonic() - self._last_hold_send >= 0.1
-                        )
-                    ):
-                        self.last_sent_action = self._hold_last_position()
-                        self._last_hold_send = time.monotonic()
+                    action = None
+                else:
+                    if action is None:
+                        return
+                    if self._stop_event.is_set():
+                        return
+                    if action is _HOLD_ACTION:
+                        if (
+                            self._hardware_enabled
+                            and self.last_sent_action is not None
+                        ):
+                            latest_action = self._hold_last_position()
+                        else:
+                            latest_action = None
+                    else:
+                        latest_action = action
+
+                now = time.monotonic()
+                if now < next_tick:
                     continue
-                if action is None:
-                    return
-                if self._stop_event.is_set():
-                    return
-                if action is _HOLD_ACTION:
-                    if self._hardware_enabled:
-                        self.last_sent_action = self._hold_last_position()
-                        self._last_hold_send = time.monotonic()
+                # Keep a stable clock without trying to replay missed cycles.
+                # The trajectory planner uses measured dt and caps long delays.
+                next_tick += self._control_period_s
+                if next_tick <= now:
+                    next_tick = now + self._control_period_s
+
+                if (
+                    self._hardware_enabled
+                    and self._expecting_actions
+                    and self._last_submit_time is not None
+                    and now - self._last_submit_time > self.input_timeout_s
+                ):
+                    raise RuntimeError(
+                        "Pico action stream timed out while control was active"
+                    )
+                if latest_action is None:
                     continue
                 if not self._hardware_enabled:
                     # The first active frame only enables both arms at their
-                    # freshly measured positions. The requested VR action is
-                    # handled on the next frame, preventing an enable-time jump.
+                    # freshly measured positions. Wait for the next VR frame
+                    # before moving so enable can never apply a stale target.
                     self.last_sent_action = self._enable_at_current_position()
-                    # Enabling both arms can legitimately take longer than the
-                    # input timeout. Start the watchdog grace period only after
-                    # the enable/current-position hold has completed.
+                    latest_action = None
                     with self._lifecycle_lock:
                         self._last_submit_time = time.monotonic()
+                    next_tick = time.monotonic() + self._control_period_s
                     continue
-                else:
-                    (
-                        self.last_sent_action,
-                        observation,
-                    ) = self._send_smoothed_action(action)
+
+                (
+                    self.last_sent_action,
+                    observation,
+                ) = self._send_smoothed_action(latest_action)
                 if (
                     observation is not None
                     and self._recorder is not None
@@ -770,6 +825,85 @@ class LeRobotOpenArmOutput:
                 key = (side, motor)
                 self._feedback_misses[key] = self._feedback_misses.get(key, 0) + 1
         return snapshot
+
+    def _poll_enabled_feedback(
+        self,
+        side: str,
+        bus: Any,
+        *,
+        max_messages: int = 64,
+    ) -> dict[str, dict[str, float]]:
+        """Consume available motor feedback without waiting for another frame."""
+        if bus.canbus is None:
+            raise ConnectionError(f"{bus.port}: CAN socket is not open")
+        recv_to_motor = {
+            bus._get_motor_recv_id(motor): bus._get_motor_name(motor)
+            for motor in bus.motors
+        }
+        responses: dict[int, Any] = {}
+        try:
+            for _ in range(max_messages):
+                message = bus.canbus.recv(timeout=0.0)
+                if message is None:
+                    break
+                if getattr(message, "is_error_frame", False):
+                    raise ConnectionError(
+                        f"{bus.port}: SocketCAN error frame "
+                        f"{bytes(message.data).hex()}"
+                    )
+                if message.arbitration_id in recv_to_motor:
+                    responses[message.arbitration_id] = message
+        except ConnectionError:
+            raise
+        except Exception as exc:
+            raise ConnectionError(
+                f"{bus.port}: non-blocking CAN receive failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        snapshot = self._process_feedback_responses(
+            side,
+            bus,
+            recv_to_motor,
+            responses,
+        )
+        now = time.monotonic()
+        stale = [
+            motor
+            for motor in bus.motors
+            if now - self._last_feedback.get((side, motor), 0.0)
+            > self.feedback_timeout_s
+        ]
+        if stale:
+            detail = ", ".join(
+                f"{motor}(age={now - self._last_feedback.get((side, motor), 0.0):.3f}s)"
+                for motor in stale
+            )
+            raise RuntimeError(f"{side} arm feedback timed out: {detail}")
+        return snapshot
+
+    def _send_mit_without_wait(
+        self,
+        bus: Any,
+        commands: dict[str, tuple[float, float, float, float, float]],
+    ) -> None:
+        """Send one control tick without blocking for its feedback replies."""
+        for motor, (kp, kd, position, velocity, torque) in commands.items():
+            motor_name = bus._get_motor_name(motor)
+            motor_type = bus._motor_types[motor_name]
+            message = self._classic_message(
+                bus._get_motor_id(motor),
+                bus._encode_mit_packet(
+                    motor_type,
+                    kp,
+                    kd,
+                    position,
+                    velocity,
+                    torque,
+                ),
+            )
+            self._send_message(bus, message)
+            time.sleep(_CAN_INTERFRAME_DELAY_S)
 
     def _send_mit_with_feedback(
         self,
@@ -1324,10 +1458,8 @@ class LeRobotOpenArmOutput:
                     commands_by_side[side],
                 )
 
-            self._action_limiter.reset(
-                limiter_positions,
-                time.monotonic(),
-            )
+            reset_time = time.monotonic()
+            self._trajectory.reset(limiter_positions, reset_time)
             with self._lifecycle_lock:
                 for side in _SIDES:
                     self._arm_power_state[side] = ArmPowerState.ENABLED
@@ -1341,7 +1473,7 @@ class LeRobotOpenArmOutput:
         self,
         action: dict[str, float],
     ) -> tuple[dict[str, float], dict[str, float] | None]:
-        """Shape, limit and send one bimanual action with MIT velocity targets."""
+        """Run one 100 Hz PT2 trajectory tick and send without CAN read waits."""
         targets: dict[str, float] = {}
         for side, arm in (
             ("left", self._robot.left_arm),
@@ -1357,13 +1489,19 @@ class LeRobotOpenArmOutput:
                     target = max(float(lower), min(float(upper), target))
                 targets[f"{side}_{motor}"] = target
 
-        positions, velocities, _ = self._action_limiter.step(
-            targets,
-            time.monotonic(),
-        )
+        control_time = time.monotonic()
+        self._trajectory.update_targets(targets)
+        positions, velocities, _ = self._trajectory.step(control_time)
 
         sent: dict[str, float] = {}
-        feedback: dict[str, dict[str, dict[str, float]]] = {}
+        # Consume replies from the preceding tick. recv(timeout=0) ensures CAN
+        # feedback can never stretch the trajectory period.
+        for side, arm in (
+            ("left", self._robot.left_arm),
+            ("right", self._robot.right_arm),
+        ):
+            self._poll_enabled_feedback(side, arm.bus)
+
         for side, arm in (
             ("left", self._robot.left_arm),
             ("right", self._robot.right_arm),
@@ -1373,30 +1511,25 @@ class LeRobotOpenArmOutput:
                 name = f"{side}_{motor}"
                 limit = self._control_limits[motor]
                 commands[motor] = (
-                    limit.kp,
+                    self._motor_position_kp(
+                        arm.bus,
+                        motor,
+                        targets[name],
+                    ),
                     limit.kd,
                     positions[name],
-                    velocities[name],
+                    # Position trajectories already move the gripper. Avoid
+                    # noisy derivative feed-forward at contact/fully closed.
+                    0.0 if motor == "gripper" else velocities[name],
                     0.0,
                 )
                 sent[f"{name}.pos"] = positions[name]
-            feedback[side] = self._send_mit_with_feedback(
-                side,
-                arm.bus,
-                commands,
-            )
-
-        if any(
-            set(feedback.get(side, {})) != set(arm.bus.motors)
-            for side, arm in (
-                ("left", self._robot.left_arm),
-                ("right", self._robot.right_arm),
-            )
-        ):
-            return sent, None
+            self._send_mit_without_wait(arm.bus, commands)
 
         observation = {
-            f"{side}_{motor}.pos": feedback[side][motor]["position"]
+            f"{side}_{motor}.pos": float(
+                arm.bus._last_known_states[motor]["position"]
+            )
             for side, arm in (
                 ("left", self._robot.left_arm),
                 ("right", self._robot.right_arm),
@@ -1405,8 +1538,25 @@ class LeRobotOpenArmOutput:
         }
         return sent, observation
 
+    def _motor_position_kp(
+        self,
+        bus: Any,
+        motor: str,
+        requested_target: float,
+    ) -> float:
+        """Reduce only empty-close gripper stiffness at its calibrated stop."""
+        limit = self._control_limits[motor]
+        if (
+            motor == "gripper"
+            and requested_target == self.gripper_closed_deg
+            and float(bus._last_known_states[motor]["position"])
+            >= self.gripper_closed_deg - self.gripper_contact_window_deg
+        ):
+            return min(limit.kp, self.gripper_contact_hold_kp)
+        return limit.kp
+
     def _hold_last_position(self) -> dict[str, float]:
-        """Hold the last sent target and clear every MIT velocity target."""
+        """Freeze the planner at its last sent target with zero velocity."""
         if self.last_sent_action is None:
             raise RuntimeError("cannot hold before an action has been sent")
 
@@ -1414,22 +1564,6 @@ class LeRobotOpenArmOutput:
             key.removesuffix(".pos"): float(value)
             for key, value in self.last_sent_action.items()
         }
-        for side, arm in (
-            ("left", self._robot.left_arm),
-            ("right", self._robot.right_arm),
-        ):
-            commands: dict[str, tuple[float, float, float, float, float]] = {}
-            for motor in arm.bus.motors:
-                name = f"{side}_{motor}"
-                limit = self._control_limits[motor]
-                commands[motor] = (
-                    limit.kp,
-                    limit.kd,
-                    positions[name],
-                    0.0,
-                    0.0,
-                )
-            self._send_mit_with_feedback(side, arm.bus, commands)
-
-        self._action_limiter.reset(positions, time.monotonic())
+        reset_time = time.monotonic()
+        self._trajectory.reset(positions, reset_time)
         return dict(self.last_sent_action)

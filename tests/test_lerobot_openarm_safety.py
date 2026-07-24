@@ -14,6 +14,11 @@ from teleop_xr.lerobot_openarm import (
     _MOTOR_STATUS_DISABLED,
     _MOTOR_STATUS_ENABLED,
 )
+from teleop_xr.openarm_safety import (
+    MotorControlLimit,
+    PT2TrajectoryGain,
+    PT2TrajectoryPlanner,
+)
 
 
 class FakeMessage:
@@ -75,7 +80,10 @@ class FakeBus:
         reply_status: int | None = None,
     ):
         self.port = port
-        self.motors = {f"joint_{index}": object() for index in range(1, 9)}
+        self.motors = {
+            **{f"joint_{index}": object() for index in range(1, 8)},
+            "gripper": object(),
+        }
         self._motor_types = dict.fromkeys(self.motors, object())
         self._last_known_states = {
             motor: {
@@ -97,6 +105,8 @@ class FakeBus:
         )
 
     def _get_motor_id(self, motor):
+        if str(motor) == "gripper":
+            return 8
         return int(str(motor).split("_")[-1])
 
     def _get_motor_recv_id(self, motor):
@@ -107,6 +117,17 @@ class FakeBus:
 
     def _decode_motor_state(self, _data, _motor_type):
         return 1.25, 2.5, 0.5, 25, 26
+
+    def _encode_mit_packet(
+        self,
+        _motor_type,
+        _kp,
+        _kd,
+        _position,
+        _velocity,
+        _torque,
+    ):
+        return [0] * 8
 
     def connect(self, handshake=False):
         if handshake:
@@ -139,8 +160,16 @@ def make_output(
         reply_status=right_status,
     )
     output._robot = SimpleNamespace(
-        left_arm=SimpleNamespace(bus=left_bus, cameras={}),
-        right_arm=SimpleNamespace(bus=right_bus, cameras={}),
+        left_arm=SimpleNamespace(
+            bus=left_bus,
+            cameras={},
+            config=SimpleNamespace(joint_limits={}),
+        ),
+        right_arm=SimpleNamespace(
+            bus=right_bus,
+            cameras={},
+            config=SimpleNamespace(joint_limits={}),
+        ),
     )
     output._hardware_enabled = True
     output._arm_power_state = {
@@ -151,6 +180,170 @@ def make_output(
 
 
 class OpenArmSafetyTests(unittest.TestCase):
+    def test_gripper_uses_binary_hysteresis_instead_of_analog_targets(self):
+        output = LeRobotOpenArmOutput(hardware=False)
+        self.assertEqual(
+            output._gripper_target("left", 0.64),
+            output.gripper_open_deg,
+        )
+        self.assertEqual(
+            output._gripper_target("left", 0.65),
+            output.gripper_closed_deg,
+        )
+        self.assertEqual(
+            output._gripper_target("left", 0.50),
+            output.gripper_closed_deg,
+        )
+        self.assertEqual(
+            output._gripper_target("left", 0.35),
+            output.gripper_open_deg,
+        )
+
+    def test_gripper_reduces_stiffness_only_at_empty_closed_stop(self):
+        output = LeRobotOpenArmOutput(hardware=False)
+        bus = SimpleNamespace(
+            _last_known_states={"gripper": {"position": 0.0}}
+        )
+        self.assertEqual(
+            output._motor_position_kp(
+                bus,
+                "gripper",
+                output.gripper_closed_deg,
+            ),
+            5.0,
+        )
+        self.assertEqual(
+            output._motor_position_kp(
+                bus,
+                "gripper",
+                output.gripper_open_deg,
+            ),
+            15.0,
+        )
+        bus._last_known_states["gripper"]["position"] = -1.0
+        self.assertEqual(
+            output._motor_position_kp(
+                bus,
+                "gripper",
+                output.gripper_closed_deg,
+            ),
+            15.0,
+        )
+
+    def test_pt2_planner_turns_sparse_target_into_small_dense_steps(self):
+        planner = PT2TrajectoryPlanner(
+            limits={
+                "joint_6": MotorControlLimit(
+                    kp=10.0,
+                    kd=0.6,
+                    max_velocity_deg_s=180.0,
+                    max_acceleration_deg_s2=1200.0,
+                )
+            },
+            gains={"joint_6": PT2TrajectoryGain(kp=200.0, kd=28.0)},
+            deadband_deg=0.15,
+            max_dt_s=0.02,
+        )
+        planner.reset({"left_joint_6": 0.0}, now=10.0)
+        planner.update_targets({"left_joint_6": 30.0})
+
+        positions, velocities, dt = planner.step(now=10.01)
+        self.assertAlmostEqual(dt, 0.01)
+        self.assertAlmostEqual(positions["left_joint_6"], 0.036, places=5)
+        self.assertAlmostEqual(velocities["left_joint_6"], 3.6, places=5)
+
+        steps = [positions["left_joint_6"]]
+        for index in range(2, 101):
+            positions, _, _ = planner.step(now=10.0 + index * 0.01)
+            steps.append(positions["left_joint_6"])
+        self.assertLessEqual(
+            max(current - previous for previous, current in zip([0.0] + steps, steps)),
+            1.8,
+        )
+
+    def test_output_worker_repeats_one_sparse_action_at_motor_clock_rate(self):
+        output = LeRobotOpenArmOutput(
+            hardware=False,
+            input_timeout_s=1.0,
+        )
+        output.hardware = True
+        output._hardware_enabled = True
+        output._expecting_actions = True
+        output._last_submit_time = time.monotonic()
+        action = {"test.pos": 1.0}
+
+        with mock.patch.object(
+            output,
+            "_send_smoothed_action",
+            return_value=(action, None),
+        ) as send_action:
+            output._put_latest(action)
+            worker = threading.Thread(target=output._send_loop)
+            worker.start()
+            time.sleep(0.065)
+            output._stop_event.set()
+            output._put_latest(None)
+            worker.join(timeout=1.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertGreaterEqual(send_action.call_count, 5)
+        self.assertTrue(
+            all(call.args[0] is action for call in send_action.call_args_list)
+        )
+
+    def test_feedback_poll_never_waits_for_can(self):
+        output, left_bus, _ = make_output()
+        now = time.monotonic()
+        for motor in left_bus.motors:
+            output._last_feedback[("left", motor)] = now
+        left_bus.canbus.pending.append(
+            FakeMessage(0x11, [0x11, 0, 0, 0, 0, 0, 25, 26])
+        )
+        receive_timeouts: list[float] = []
+        original_recv = left_bus.canbus.recv
+
+        def tracked_recv(timeout=0.0):
+            receive_timeouts.append(timeout)
+            return original_recv(timeout=timeout)
+
+        left_bus.canbus.recv = tracked_recv
+        snapshot = output._poll_enabled_feedback("left", left_bus)
+        self.assertIn("joint_1", snapshot)
+        self.assertTrue(receive_timeouts)
+        self.assertEqual(set(receive_timeouts), {0.0})
+
+    def test_full_control_tick_sends_both_arms_and_reuses_cached_feedback(self):
+        output, left_bus, right_bus = make_output()
+        positions = {
+            f"{side}_{motor}": 0.0
+            for side, bus in (("left", left_bus), ("right", right_bus))
+            for motor in bus.motors
+        }
+        now = time.monotonic()
+        output._trajectory.reset(positions, now - 0.01)
+        for side, bus in (("left", left_bus), ("right", right_bus)):
+            for motor in bus.motors:
+                output._last_feedback[(side, motor)] = now
+        action = {
+            f"{name}.pos": (
+                output.gripper_closed_deg
+                if name.endswith("_gripper")
+                else 5.0
+            )
+            for name in positions
+        }
+
+        with mock.patch("teleop_xr.lerobot_openarm.time.sleep"):
+            sent, first_observation = output._send_smoothed_action(action)
+            _, second_observation = output._send_smoothed_action(action)
+
+        self.assertEqual(set(sent), set(action))
+        self.assertEqual(len(left_bus.canbus.sent), 16)
+        self.assertEqual(len(right_bus.canbus.sent), 16)
+        self.assertIsNotNone(first_observation)
+        self.assertIsNotNone(second_observation)
+        self.assertEqual(len(second_observation), 16)
+
     def test_classic_frames_are_always_eight_byte_standard_can(self):
         message = LeRobotOpenArmOutput._classic_message(
             0x01,
