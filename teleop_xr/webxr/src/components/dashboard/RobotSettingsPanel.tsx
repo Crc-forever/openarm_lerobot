@@ -1,8 +1,7 @@
 "use client";
 
-import { ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
 import {
 	Card,
 	CardContent,
@@ -21,18 +20,9 @@ export function RobotSettingsPanel() {
 	// Access store state and actions
 	const robotSettings = useAppStore((state) => state.robotSettings);
 	const setRobotSettings = useAppStore((state) => state.setRobotSettings);
-	const setRobotResetTrigger = useAppStore(
-		(state) => state.setRobotResetTrigger,
-	);
 
 	// Settings values from store
-	const {
-		robotVisible,
-		showAxes,
-		spawnDistance,
-		spawnHeight,
-		distanceGrabEnabled,
-	} = robotSettings;
+	const { robotVisible, showAxes, spawnDistance, spawnHeight } = robotSettings;
 
 	const handleRobotVisibilityChange = (checked: boolean) => {
 		setRobotSettings({ robotVisible: checked });
@@ -40,10 +30,6 @@ export function RobotSettingsPanel() {
 
 	const handleShowAxesChange = (checked: boolean) => {
 		setRobotSettings({ showAxes: checked });
-	};
-
-	const handleDistanceGrabChange = (checked: boolean) => {
-		setRobotSettings({ distanceGrabEnabled: checked });
 	};
 
 	const handleSpawnDistanceChange = (value: number[]) => {
@@ -54,10 +40,6 @@ export function RobotSettingsPanel() {
 		setRobotSettings({ spawnHeight: value[0] });
 	};
 
-	const handleResetRobot = () => {
-		setRobotResetTrigger(Date.now());
-	};
-
 	return (
 		<Card className="w-full">
 			<CardHeader
@@ -66,8 +48,8 @@ export function RobotSettingsPanel() {
 			>
 				<div className="flex items-center justify-between">
 					<div>
-						<CardTitle>Robot Settings</CardTitle>
-						<CardDescription>Visibility and positioning</CardDescription>
+						<CardTitle>骨架显示设置</CardTitle>
+						<CardDescription>调整 Pico 中机器人骨架的显示</CardDescription>
 					</div>
 					{isOpen ? (
 						<ChevronUp className="h-4 w-4" />
@@ -81,7 +63,7 @@ export function RobotSettingsPanel() {
 					{/* Visualization Section */}
 					<div className="space-y-4">
 						<div className="flex items-center justify-between space-x-2">
-							<Label htmlFor="robot-visible">Robot Visibility</Label>
+							<Label htmlFor="robot-visible">显示机器人骨架</Label>
 							<Switch
 								id="robot-visible"
 								checked={robotVisible}
@@ -90,7 +72,7 @@ export function RobotSettingsPanel() {
 						</div>
 
 						<div className="flex items-center justify-between space-x-2">
-							<Label htmlFor="show-axes">Show Axes</Label>
+							<Label htmlFor="show-axes">显示坐标轴</Label>
 							<Switch
 								id="show-axes"
 								checked={showAxes}
@@ -98,18 +80,9 @@ export function RobotSettingsPanel() {
 							/>
 						</div>
 
-						<div className="flex items-center justify-between space-x-2">
-							<Label htmlFor="distance-grab">Distance Grab</Label>
-							<Switch
-								id="distance-grab"
-								checked={distanceGrabEnabled}
-								onCheckedChange={handleDistanceGrabChange}
-							/>
-						</div>
-
 						<div className="space-y-2">
 							<div className="flex items-center justify-between">
-								<Label htmlFor="spawn-distance">Spawn Distance</Label>
+								<Label htmlFor="spawn-distance">骨架显示距离</Label>
 								<span className="text-sm text-muted-foreground">
 									{spawnDistance.toFixed(1)}m
 								</span>
@@ -126,7 +99,7 @@ export function RobotSettingsPanel() {
 
 						<div className="space-y-2">
 							<div className="flex items-center justify-between">
-								<Label htmlFor="spawn-height">Spawn Height Offset</Label>
+								<Label htmlFor="spawn-height">骨架高度偏移</Label>
 								<span className="text-sm text-muted-foreground">
 									{spawnHeight.toFixed(1)}m
 								</span>
@@ -142,17 +115,9 @@ export function RobotSettingsPanel() {
 						</div>
 					</div>
 
-					{/* Actions */}
-					<div className="pt-2">
-						<Button
-							variant="outline"
-							className="w-full gap-2"
-							onClick={handleResetRobot}
-						>
-							<RefreshCw className="h-4 w-4" />
-							Reset Robot Position
-						</Button>
-					</div>
+					<p className="text-xs text-muted-foreground">
+						距离和高度会在下一次 Y + B 重置坐标轴时生效。
+					</p>
 				</CardContent>
 			)}
 		</Card>

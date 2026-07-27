@@ -4,7 +4,16 @@
 hostname -I
 
 # 初始化CAN：
-sudo ./scripts/setup_can.sh
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 1000000 dbitrate 5000000 fd on
+sudo ip link set can0 txqueuelen 1000
+sudo ip link set can0 up
+
+sudo ip link set can1 down
+sudo ip link set can1 type can bitrate 1000000 dbitrate 5000000 fd on
+sudo ip link set can1 txqueuelen 1000
+sudo ip link set can1 up
+
 
 # 启动局域网遥操作
 ./scripts/start.sh robot -host 0.0.0.0 --port 4443

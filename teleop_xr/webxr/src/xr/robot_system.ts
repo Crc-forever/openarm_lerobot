@@ -14,6 +14,7 @@ import {
 	LoadingManager,
 	Mesh,
 	type Object3D,
+	Quaternion,
 	SRGBColorSpace,
 	Texture,
 	Vector3,
@@ -31,6 +32,7 @@ export class RobotModelSystem extends createSystem({}) {
 	private loader!: URDFLoader;
 	private robotEntity: Entity | null = null;
 	private robotModel: Object3D | null = null;
+	private robotHeadingNode: Group | null = null;
 	private axesHelper: AxesHelper | null = null;
 	private loadingEntity: Entity | null = null;
 
@@ -125,7 +127,8 @@ export class RobotModelSystem extends createSystem({}) {
 				if (this.robotEntity?.object3D) {
 					this.positionRobotInFront(
 						this.robotEntity.object3D,
-						this.world.camera,
+						this.world.player?.head ?? this.world.camera,
+						state.robotResetHeading,
 					);
 				}
 			}
@@ -205,11 +208,19 @@ export class RobotModelSystem extends createSystem({}) {
 				this.robotEntity.destroy();
 				this.robotEntity = null;
 				this.robotModel = null;
+				this.robotHeadingNode = null;
 			}
 
 			const tiltNode = new Group();
 			tiltNode.rotation.x = -Math.PI / 2;
 			tiltNode.rotation.z = Math.PI / 2;
+			// Keep runtime heading on a plain Three.js node. IWSdk owns the
+			// entity root transform, while this child remains fully under our
+			// control during repeated operator-frame resets.
+			const headingNode = new Group();
+			headingNode.name = "openarm-operator-heading";
+			headingNode.add(tiltNode);
+			this.robotHeadingNode = headingNode;
 			let rx = 0;
 			let ry = 0;
 			let rz = 0;
@@ -251,7 +262,7 @@ export class RobotModelSystem extends createSystem({}) {
 				return;
 			}
 			const robotObject3D: Object3D = robotObject;
-			robotObject3D.add(tiltNode);
+			robotObject3D.add(headingNode);
 
 			this.axesHelper = new AxesHelper(1.0);
 			this.axesHelper.visible = useAppStore.getState().robotSettings.showAxes;
@@ -264,7 +275,7 @@ export class RobotModelSystem extends createSystem({}) {
 			robotObject3D.add(ambientLight);
 			robotObject3D.add(dirLight);
 
-			const camera = this.world.camera;
+			const camera = this.world.player?.head ?? this.world.camera;
 			if (camera) {
 				this.positionRobotInFront(robotObject3D, camera);
 			}
@@ -316,7 +327,7 @@ export class RobotModelSystem extends createSystem({}) {
 					this.loadingEntity.object3D.add(container);
 					this.positionRobotInFront(
 						this.loadingEntity.object3D,
-						this.world.camera,
+						this.world.player?.head ?? this.world.camera,
 					);
 				}
 			}
@@ -336,15 +347,33 @@ export class RobotModelSystem extends createSystem({}) {
 	private positionRobotInFront(
 		robotObject: Object3D,
 		camera: Object3D | null | undefined,
+		headingOverride?: number | null,
 	) {
-		if (!camera || !camera.position) {
+		if (!camera) {
 			return;
 		}
 		const { spawnDistance, spawnHeight } = useAppStore.getState().robotSettings;
-		const cameraPosition = camera.position;
-		const forward = new Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+		const cameraPosition = new Vector3();
+		camera.getWorldPosition(cameraPosition);
+		const cameraQuaternion = new Quaternion();
+		camera.getWorldQuaternion(cameraQuaternion);
+		const forward = new Vector3(0, 0, -1).applyQuaternion(cameraQuaternion);
 		forward.y = 0; // Keep horizontal
 		forward.normalize();
+		// Match the backend's WebXR operator frame: Y is up and local -Z is
+		// forward. Resetting must rotate the robot as well as moving it, or the
+		// displayed skeleton and the newly captured control axes disagree.
+		const measuredHeading = Math.atan2(-forward.x, -forward.z);
+		const backendHeading =
+			headingOverride !== null &&
+			headingOverride !== undefined &&
+			Number.isFinite(headingOverride)
+				? headingOverride
+				: null;
+		// Visual placement must follow what the operator is looking at now.
+		// The backend value is logged below to verify that control and display
+		// agree, but cannot pin the skeleton to an obsolete heading.
+		const heading = measuredHeading;
 		const spawnPos = cameraPosition
 			.clone()
 			.add(forward.multiplyScalar(spawnDistance));
@@ -357,7 +386,46 @@ export class RobotModelSystem extends createSystem({}) {
 		// Let's drop it slightly below eye level (e.g. 30cm down) so it's comfortable to look at
 		spawnPos.y = Math.max(0.5, cameraPosition.y + spawnHeight);
 		robotObject.position.copy(spawnPos);
-		robotObject.rotation.set(0, 0, 0);
+
+		// Rotate a plain child node for the robot model. This deliberately
+		// bypasses the IWSdk-managed entity root, whose Euler/quaternion binding
+		// is replaced by TransformSystem.
+		const rotationTarget =
+			this.robotEntity?.object3D === robotObject && this.robotHeadingNode
+				? this.robotHeadingNode
+				: robotObject;
+		const worldHeading = new Quaternion().setFromAxisAngle(
+			new Vector3(0, 1, 0),
+			heading,
+		);
+		if (rotationTarget.parent) {
+			const parentWorldInverse = new Quaternion();
+			rotationTarget.parent
+				.getWorldQuaternion(parentWorldInverse)
+				.invert();
+			worldHeading.premultiply(parentWorldInverse);
+		}
+		rotationTarget.quaternion.copy(worldHeading);
+		rotationTarget.updateMatrixWorld(true);
+		const appliedWorldQuaternion = new Quaternion();
+		rotationTarget.getWorldQuaternion(appliedWorldQuaternion);
+		const appliedForward = new Vector3(0, 0, -1).applyQuaternion(
+			appliedWorldQuaternion,
+		);
+		const appliedHeading = Math.atan2(
+			-appliedForward.x,
+			-appliedForward.z,
+		);
+		console.info(
+			`[RobotModelSystem] Robot pose reset: headset=${(
+				(heading * 180) /
+				Math.PI
+			).toFixed(1)}deg backend=${
+				backendHeading === null
+					? "n/a"
+					: `${((backendHeading * 180) / Math.PI).toFixed(1)}deg`
+			} applied=${((appliedHeading * 180) / Math.PI).toFixed(1)}deg`,
+		);
 	}
 
 	private processRobotMaterials(robot: Object3D) {

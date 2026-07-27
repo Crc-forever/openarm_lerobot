@@ -45,6 +45,7 @@ export type AppState = {
 	advancedSettings: AdvancedSettings;
 	robotSettings: RobotSettings;
 	robotResetTrigger: number;
+	robotResetHeading: number | null;
 	teleopTelemetry: TeleopTelemetry;
 	connectionStatus: ConnectionStatus;
 	teleopLifecycle: TeleopLifecycle;
@@ -56,7 +57,7 @@ export type AppState = {
 	setTeleopSettings: (settings: Partial<TeleopSettings>) => void;
 	setAdvancedSettings: (settings: Partial<AdvancedSettings>) => void;
 	setRobotSettings: (settings: Partial<RobotSettings>) => void;
-	setRobotResetTrigger: (trigger: number) => void;
+	setRobotResetTrigger: (trigger: number, heading?: number) => void;
 	setTeleopTelemetry: (telemetry: TeleopTelemetry) => void;
 	setConnectionStatus: (status: ConnectionStatus) => void;
 	setTeleopLifecycle: (status: TeleopLifecycle) => void;
@@ -96,6 +97,7 @@ export const useAppStore = create<AppState>()(
 			advancedSettings: defaultAdvancedSettings,
 			robotSettings: defaultRobotSettings,
 			robotResetTrigger: 0,
+			robotResetHeading: null,
 			teleopTelemetry: defaultTeleopTelemetry,
 			connectionStatus: "disconnected",
 			teleopLifecycle: "disconnected",
@@ -132,8 +134,14 @@ export const useAppStore = create<AppState>()(
 					robotSettings: { ...state.robotSettings, ...settings },
 				}));
 			},
-			setRobotResetTrigger: (trigger) => {
-				set({ robotResetTrigger: trigger });
+			setRobotResetTrigger: (trigger, heading) => {
+				set({
+					robotResetTrigger: trigger,
+					robotResetHeading:
+						heading !== undefined && Number.isFinite(heading)
+							? heading
+							: null,
+				});
 			},
 			setTeleopTelemetry: (telemetry) => {
 				set({ teleopTelemetry: telemetry });

@@ -50,6 +50,9 @@ if TYPE_CHECKING:
 
 # Maximum number of events to display in the event log
 MAX_EVENT_LOG_SIZE = 10
+COORDINATE_RESET_HOLD_S = 1.5
+SECONDARY_BUTTON_INDEX = 5
+SQUEEZE_BUTTON_INDEX = 1
 
 
 @dataclass
@@ -381,6 +384,9 @@ def generate_ik_controls_panel() -> Panel:
     text.append("• Double-click ", style="dim")
     text.append("DEADMAN (Grip)", style="bold magenta")
     text.append(" to reset joints\n", style="dim")
+    text.append("• Release grips, hold ", style="dim")
+    text.append("Y + B", style="bold green")
+    text.append(" for 1.5s to reset control axes\n", style="dim")
     text.append("• Press ", style="dim")
     text.append("D", style="bold cyan")
     text.append(" to run right EE delta demo", style="dim")
@@ -437,6 +443,8 @@ class IKWorker(threading.Thread):
         self.teleop_loop = None  # Will be set when on_xr_update runs
         self._worker_lock = threading.Lock()
         self._output_faulted = False
+        self._coordinate_reset_started_at: float | None = None
+        self._coordinate_reset_fired = False
 
     def update_state(self, state: XRState):
         """Thread-safe update of the latest state."""
@@ -460,6 +468,57 @@ class IKWorker(threading.Thread):
                     self.teleop.publish_joint_state(joint_dict),
                     self.teleop_loop,
                 )
+
+    @staticmethod
+    def _button_pressed(device: Any, index: int) -> bool:
+        return bool(
+            device.gamepad is not None
+            and len(device.gamepad.buttons) > index
+            and device.gamepad.buttons[index].pressed
+        )
+
+    def _coordinate_reset_requested(
+        self,
+        state: XRState,
+        now: float,
+    ) -> bool:
+        """Detect released-grip, two-hand Y+B hold without repeated firing."""
+        controllers = {
+            device.handedness.value: device
+            for device in state.devices
+            if device.role.value == "controller"
+        }
+        left = controllers.get("left")
+        right = controllers.get("right")
+        both_secondary = bool(
+            left is not None
+            and right is not None
+            and self._button_pressed(left, SECONDARY_BUTTON_INDEX)
+            and self._button_pressed(right, SECONDARY_BUTTON_INDEX)
+        )
+        any_squeeze = bool(
+            (left is not None and self._button_pressed(left, SQUEEZE_BUTTON_INDEX))
+            or (
+                right is not None
+                and self._button_pressed(right, SQUEEZE_BUTTON_INDEX)
+            )
+        )
+
+        if not both_secondary or any_squeeze:
+            self._coordinate_reset_started_at = None
+            self._coordinate_reset_fired = False
+            return False
+
+        if self._coordinate_reset_started_at is None:
+            self._coordinate_reset_started_at = now
+            return False
+        if self._coordinate_reset_fired:
+            return False
+        if now - self._coordinate_reset_started_at < COORDINATE_RESET_HOLD_S:
+            return False
+
+        self._coordinate_reset_fired = True
+        return True
 
     def run(self):
         # ── 频率计数器（调试用）──
@@ -496,6 +555,32 @@ class IKWorker(threading.Thread):
                 with self._worker_lock:
                     q_current = self.state_container["q"]
                     was_active = self.controller.active
+                    reset_coordinates = self._coordinate_reset_requested(
+                        state,
+                        time.monotonic(),
+                    )
+                    if reset_coordinates:
+                        if self.action_output is not None:
+                            self.action_output.hold()
+                        try:
+                            yaw = self.controller.reset_operator_frame(state)
+                        except ValueError as exc:
+                            self.logger.warning(
+                                "Coordinate reset rejected: %s",
+                                exc,
+                            )
+                        else:
+                            self.state_container["active"] = False
+                            self.logger.info(
+                                "Operator control frame reset with Y+B "
+                                "(yaw=%.1f deg)",
+                                np.degrees(yaw),
+                            )
+                            if self.teleop_loop and self.teleop_loop.is_running():
+                                asyncio.run_coroutine_threadsafe(
+                                    self.teleop.publish_control_frame_reset(yaw),
+                                    self.teleop_loop,
+                                )
 
                     t0 = time.perf_counter()
                     new_config = np.array(self.controller.step(state, q_current))

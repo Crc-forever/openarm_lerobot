@@ -99,6 +99,17 @@ export class TeleopSystem extends createSystem({}) {
 					if (robotSystem) {
 						robotSystem.onRobotState(message.data);
 					}
+				} else if (message.type === "control_frame_reset") {
+					// Keep the visual robot aligned with the newly captured
+					// operator-forward frame. This affects display placement only.
+					const heading = Number(message.data?.yaw_rad);
+					useAppStore
+						.getState()
+						.setRobotResetTrigger(
+							Date.now(),
+							Number.isFinite(heading) ? heading : undefined,
+						);
+					console.info("[TeleopSystem] Operator control frame reset");
 				}
 			} catch (error) {
 				console.warn("Failed to parse WS message", error);
@@ -162,7 +173,9 @@ export class TeleopSystem extends createSystem({}) {
 
 	buildControllerDevice(
 		handedness: "left" | "right",
-		// biome-ignore lint/suspicious/noExplicitAny: legacy
+		// biome-ignore lint/suspicious/noExplicitAny: XR input spaces are SDK-owned
+		gripSpace: any,
+		// biome-ignore lint/suspicious/noExplicitAny: fallback for incomplete runtimes
 		raySpace: any,
 		// biome-ignore lint/suspicious/noExplicitAny: legacy
 		gamepad: any,
@@ -172,7 +185,9 @@ export class TeleopSystem extends createSystem({}) {
 			return null;
 		}
 
-		const pose = this.poseFromObject(raySpace);
+		// gripSpace represents the physical controller grip, including full
+		// wrist orientation. target-ray space is only a compatibility fallback.
+		const pose = this.poseFromObject(gripSpace ?? raySpace);
 		if (!pose) {
 			return null;
 		}
@@ -341,6 +356,7 @@ export class TeleopSystem extends createSystem({}) {
 
 		const leftDevice = this.buildControllerDevice(
 			"left",
+			player?.gripSpaces?.left,
 			player?.raySpaces?.left,
 			input?.gamepads?.left,
 			Boolean(input?.isPrimary?.("hand", "left")),
@@ -351,6 +367,7 @@ export class TeleopSystem extends createSystem({}) {
 
 		const rightDevice = this.buildControllerDevice(
 			"right",
+			player?.gripSpaces?.right,
 			player?.raySpaces?.right,
 			input?.gamepads?.right,
 			Boolean(input?.isPrimary?.("hand", "right")),

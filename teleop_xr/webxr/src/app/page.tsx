@@ -3,8 +3,6 @@
 import { Glasses, X } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useCallback, useState } from "react";
-import { AdvancedSettingsPanel } from "@/components/dashboard/AdvancedSettingsPanel";
-import { CameraSettingsPanel } from "@/components/dashboard/CameraSettingsPanel";
 import { RobotSettingsPanel } from "@/components/dashboard/RobotSettingsPanel";
 import { TeleopPanel } from "@/components/dashboard/TeleopPanel";
 import { Button } from "@/components/ui/button";
@@ -41,10 +39,10 @@ export default function Home() {
 			<div className="relative z-10 mx-auto max-w-5xl space-y-8">
 				<header className="flex items-center justify-between rounded-xl border bg-background/60 px-6 py-5 backdrop-blur">
 					<div>
-						<h1 className="text-3xl font-bold tracking-tight">TeleopXR</h1>
-						<p className="text-muted-foreground">
-							Robot Teleoperation Dashboard
-						</p>
+						<h1 className="text-3xl font-bold tracking-tight">
+							OpenArm 遥操作
+						</h1>
+						<p className="text-muted-foreground">Pico MR 双臂控制界面</p>
 					</div>
 					<div className="flex items-center gap-3">
 						{selectedMode === null ? (
@@ -77,15 +75,9 @@ export default function Home() {
 					</div>
 				) : null}
 
-				<div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-					<div className="space-y-6 lg:col-span-2">
-						<TeleopPanel />
-						<RobotSettingsPanel />
-					</div>
-					<div className="space-y-6">
-						<CameraSettingsPanel />
-						<AdvancedSettingsPanel />
-					</div>
+				<div className="grid items-start gap-6 md:grid-cols-2">
+					<TeleopPanel />
+					<RobotSettingsPanel />
 				</div>
 			</div>
 		</main>

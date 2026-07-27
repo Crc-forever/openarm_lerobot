@@ -513,6 +513,17 @@ class Teleop:
         if self.robot_vis:
             await self.robot_vis.broadcast_state(self.__manager, joints)
 
+    async def publish_control_frame_reset(self, yaw_rad: float) -> None:
+        """Notify XR clients to realign visual placement with operator forward."""
+        await self.__manager.broadcast(
+            json.dumps(
+                {
+                    "type": "control_frame_reset",
+                    "data": {"yaw_rad": float(yaw_rad)},
+                }
+            )
+        )
+
     def __setup_routes(self):
         static_dir, index_path, mount_path, mount_name = _resolve_frontend_paths(
             THIS_DIR

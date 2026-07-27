@@ -47,6 +47,10 @@ class IKController:
         self.active = False
         self._warned_unsupported = set()
         self._mode = ControlMode.TELEOP
+        # Yaw-only rotation from the operator's local frame into the canonical
+        # ROS world frame. Incoming WebXR poses have already been converted
+        # from RUB (right/up/back) to ROS FLU (forward/left/up) by TeleopXR.
+        self.operator_heading_ros: jaxlie.SO3 | None = None
 
         # Snapshots
         self.snapshot_xr = {}
@@ -267,15 +271,71 @@ class IKController:
             jaxlie.SE3: The calculated target pose for the robot end-effector.
         """
         t_delta_ros = t_ctrl_curr.translation() - t_ctrl_init.translation()
-        t_delta_robot = self.robot.ros_to_base @ t_delta_ros
+        operator_world_to_local = (
+            self.operator_heading_ros.inverse()
+            if self.operator_heading_ros is not None
+            else jaxlie.SO3.identity()
+        )
+        t_delta_operator = operator_world_to_local @ t_delta_ros
+        t_delta_robot = self.robot.ros_to_base @ t_delta_operator
 
         q_delta_ros = t_ctrl_curr.rotation() @ t_ctrl_init.rotation().inverse()
-        q_delta_robot = self.robot.ros_to_base @ q_delta_ros @ self.robot.base_to_ros
+        q_delta_operator = (
+            operator_world_to_local
+            @ q_delta_ros
+            @ operator_world_to_local.inverse()
+        )
+        q_delta_robot = (
+            self.robot.ros_to_base
+            @ q_delta_operator
+            @ self.robot.base_to_ros
+        )
 
         t_new = t_ee_init.translation() + t_delta_robot
         q_new = q_delta_robot @ t_ee_init.rotation()
 
         return jaxlie.SE3.from_rotation_and_translation(q_new, t_new)
+
+    def _get_head_pose(self, state: XRState) -> jaxlie.SE3 | None:
+        """Return the headset pose even when the robot has no head target."""
+        for device in state.devices:
+            if device.role == XRDeviceRole.HEAD and device.pose is not None:
+                return self.xr_pose_to_se3(device.pose)
+        return None
+
+    @staticmethod
+    def _horizontal_heading(head_pose: jaxlie.SE3) -> jaxlie.SO3:
+        """Extract headset heading in canonical ROS FLU coordinates.
+
+        TeleopXR converts WebXR RUB poses before they reach this controller, so
+        +Z is up and the headset's canonical forward direction is +X here. The
+        returned yaw rotation maps canonical +X into the current horizontal
+        headset-forward direction.
+        """
+        forward = head_pose.rotation() @ jnp.array([1.0, 0.0, 0.0])
+        horizontal_norm = jnp.sqrt(forward[0] ** 2 + forward[1] ** 2)
+        if float(horizontal_norm) < 1e-6:
+            raise ValueError("headset forward direction is vertical")
+        heading = jnp.arctan2(forward[1], forward[0])
+        return jaxlie.SO3.from_rpy_radians(
+            roll=0.0,
+            pitch=0.0,
+            yaw=heading,
+        )
+
+    def reset_operator_frame(self, state: XRState) -> float:
+        """Use current headset yaw as operator-forward and clear hand snapshots."""
+        head_pose = self._get_head_pose(state)
+        if head_pose is None:
+            raise ValueError("cannot reset control frame without a headset pose")
+        self.operator_heading_ros = self._horizontal_heading(head_pose)
+        forward = self.operator_heading_ros @ jnp.array([1.0, 0.0, 0.0])
+        yaw = float(jnp.arctan2(forward[1], forward[0]))
+        self.reset()
+        logger.info(
+            f"[IKController] Operator control frame reset: yaw={yaw:.3f} rad"
+        )
+        return yaw
 
     def _get_device_poses(self, state: XRState) -> dict[str, jaxlie.SE3]:
         """
@@ -360,6 +420,26 @@ class IKController:
 
         if is_deadman_active and has_all_poses:
             if not self.active:
+                if self.operator_heading_ros is None:
+                    head_pose = self._get_head_pose(state)
+                    if head_pose is not None:
+                        self.operator_heading_ros = self._horizontal_heading(
+                            head_pose
+                        )
+                        forward = self.operator_heading_ros @ jnp.array(
+                            [1.0, 0.0, 0.0]
+                        )
+                        yaw = float(jnp.arctan2(forward[1], forward[0]))
+                        logger.info(
+                            "[IKController] Initial operator control frame: "
+                            f"yaw={yaw:.3f} rad"
+                        )
+                    else:
+                        self.operator_heading_ros = jaxlie.SO3.identity()
+                        logger.warning(
+                            "[IKController] Head pose unavailable; using the "
+                            "ROS world axes for operator control"
+                        )
                 # Engagement transition: take snapshots
                 self.active = True
                 self.snapshot_xr = curr_xr_poses
