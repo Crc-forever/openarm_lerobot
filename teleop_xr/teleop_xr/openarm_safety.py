@@ -113,19 +113,19 @@ def load_control_timeouts(config_path: str | Path) -> tuple[float, float]:
     return feedback_timeout_s, input_timeout_s
 
 
-def load_gripper_hysteresis(config_path: str | Path) -> tuple[float, float]:
-    """Load separate close/reopen thresholds for a stable binary gripper."""
+def load_gripper_input_range(config_path: str | Path) -> tuple[float, float]:
+    """Load the analog trigger range mapped to full gripper travel."""
     path = Path(config_path)
     document: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
     gripper = document["controls"]["gripper"]
-    close_threshold = float(gripper["close_threshold"])
-    open_threshold = float(gripper["open_threshold"])
-    if not 0.0 <= open_threshold < close_threshold <= 1.0:
+    input_min = float(gripper["input_min"])
+    input_max = float(gripper["input_max"])
+    if not 0.0 <= input_min < input_max <= 1.0:
         raise ValueError(
-            f"{path}: require 0 <= gripper.open_threshold < "
-            "gripper.close_threshold <= 1"
+            f"{path}: require 0 <= gripper.input_min < "
+            "gripper.input_max <= 1"
         )
-    return open_threshold, close_threshold
+    return input_min, input_max
 
 
 def load_gripper_contact_hold(
@@ -288,7 +288,8 @@ class PT2TrajectoryPlanner:
             raise RuntimeError("PT2 planner targets do not match its motors")
         for name, target in targets.items():
             value = float(target)
-            # The gripper target is already stabilized by binary hysteresis.
+            # Preserve the continuous analog gripper target; its PT2 trajectory
+            # smooths input noise without quantizing trigger depth.
             if name.endswith("_gripper") or (
                 abs(value - self._raw_target[name]) > self.deadband_deg
             ):

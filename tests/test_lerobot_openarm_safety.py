@@ -180,24 +180,13 @@ def make_output(
 
 
 class OpenArmSafetyTests(unittest.TestCase):
-    def test_gripper_uses_binary_hysteresis_instead_of_analog_targets(self):
+    def test_gripper_tracks_analog_trigger_depth_with_endpoint_dead_zones(self):
         output = LeRobotOpenArmOutput(hardware=False)
-        self.assertEqual(
-            output._gripper_target("left", 0.64),
-            output.gripper_open_deg,
-        )
-        self.assertEqual(
-            output._gripper_target("left", 0.65),
-            output.gripper_closed_deg,
-        )
-        self.assertEqual(
-            output._gripper_target("left", 0.50),
-            output.gripper_closed_deg,
-        )
-        self.assertEqual(
-            output._gripper_target("left", 0.35),
-            output.gripper_open_deg,
-        )
+        self.assertEqual(output._gripper_target("left", 0.0), -60.0)
+        self.assertEqual(output._gripper_target("left", 0.05), -60.0)
+        self.assertAlmostEqual(output._gripper_target("left", 0.50), -30.0)
+        self.assertEqual(output._gripper_target("left", 0.95), 0.0)
+        self.assertEqual(output._gripper_target("left", 1.0), 0.0)
 
     def test_gripper_reduces_stiffness_only_at_empty_closed_stop(self):
         output = LeRobotOpenArmOutput(hardware=False)

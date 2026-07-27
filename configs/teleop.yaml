@@ -28,9 +28,10 @@ controls:
     button_index: 0
     button_name: trigger
     value_field: value
-    # Hysteresis prevents small trigger-value noise from toggling the target.
-    close_threshold: 0.65
-    open_threshold: 0.35
+    # Map the analog trigger continuously to gripper position. Small endpoint
+    # dead zones guarantee a stable fully-open and fully-closed command.
+    input_min: 0.05
+    input_max: 0.95
 
 lerobot:
   robot_type: bi_openarm_follower
@@ -67,9 +68,8 @@ lerobot:
         joint_5: {kp: 200.0, kd: 28.0}
         joint_6: {kp: 200.0, kd: 28.0}
         joint_7: {kp: 200.0, kd: 28.0}
-        # The legacy bridge sent the binary gripper target directly. Keep a
-        # short trajectory for contact safety, but make its response much
-        # quicker than the arm-joint trajectory.
+        # Keep the analog gripper responsive while smoothing trigger noise and
+        # protecting contact with a short position trajectory.
         gripper: {kp: 1200.0, kd: 45.0}
     # MIT gains restored from the verified smooth legacy bridge. Lower wrist
     # stiffness is intentional and especially important for J6/J7.
@@ -81,9 +81,8 @@ lerobot:
       joint_5: {kp: 10.0, kd: 0.7, max_velocity_deg_s: 180.0, max_acceleration_deg_s2: 1200.0}
       joint_6: {kp: 10.0, kd: 0.6, max_velocity_deg_s: 180.0, max_acceleration_deg_s2: 1200.0}
       joint_7: {kp: 10.0, kd: 0.5, max_velocity_deg_s: 180.0, max_acceleration_deg_s2: 1200.0}
-      # The verified legacy bridge used KP=50/KD=1 and sent the binary
-      # open/close target directly. This keeps a brief smooth trajectory while
-      # restoring comparable motor response.
+      # The verified legacy bridge used KP=50/KD=1. Keep those motor gains
+      # while accepting a continuously varying trigger target.
       gripper: {kp: 50.0, kd: 1.0, max_velocity_deg_s: 600.0, max_acceleration_deg_s2: 6000.0}
 
 recording:

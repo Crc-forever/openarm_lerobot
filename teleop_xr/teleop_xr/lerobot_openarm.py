@@ -20,7 +20,7 @@ from teleop_xr.openarm_safety import (
     load_control_limits,
     load_control_timeouts,
     load_gripper_contact_hold,
-    load_gripper_hysteresis,
+    load_gripper_input_range,
     load_gripper_positions,
     load_pt2_trajectory_settings,
 )
@@ -137,14 +137,13 @@ class LeRobotOpenArmOutput:
             max_dt_s=max_dt_s,
         )
         (
-            self.gripper_open_threshold,
-            self.gripper_close_threshold,
-        ) = load_gripper_hysteresis(self.control_config_path)
+            self.gripper_input_min,
+            self.gripper_input_max,
+        ) = load_gripper_input_range(self.control_config_path)
         (
             self.gripper_contact_hold_kp,
             self.gripper_contact_window_deg,
         ) = load_gripper_contact_hold(self.control_config_path)
-        self._gripper_closed = {"left": False, "right": False}
         self.record = record
         self.dataset_root = dataset_root
         self.dataset_repo_id = dataset_repo_id
@@ -425,16 +424,19 @@ class LeRobotOpenArmOutput:
             self._atexit_handler = None
 
     def _gripper_target(self, side: str, trigger: float) -> float:
+        if side not in _SIDES:
+            raise ValueError(f"unknown gripper side: {side}")
         value = min(1.0, max(0.0, float(trigger)))
-        if self._gripper_closed[side]:
-            if value <= self.gripper_open_threshold:
-                self._gripper_closed[side] = False
-        elif value >= self.gripper_close_threshold:
-            self._gripper_closed[side] = True
-        return (
-            self.gripper_closed_deg
-            if self._gripper_closed[side]
-            else self.gripper_open_deg
+        normalized = min(
+            1.0,
+            max(
+                0.0,
+                (value - self.gripper_input_min)
+                / (self.gripper_input_max - self.gripper_input_min),
+            ),
+        )
+        return self.gripper_open_deg + normalized * (
+            self.gripper_closed_deg - self.gripper_open_deg
         )
 
     def _send_loop(self) -> None:
