@@ -1,6 +1,6 @@
 "use client";
 
-import { Glasses, Monitor, X } from "lucide-react";
+import { Glasses, X } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useCallback, useState } from "react";
 import { AdvancedSettingsPanel } from "@/components/dashboard/AdvancedSettingsPanel";
@@ -14,16 +14,11 @@ const XRScene = dynamic(
 	{ ssr: false },
 );
 
-export type XRMode = "vr" | "passthrough" | null;
+export type XRMode = "passthrough" | null;
 
 export default function Home() {
 	const [xrError, setXrError] = useState<string | null>(null);
 	const [selectedMode, setSelectedMode] = useState<XRMode>(null);
-
-	const handleEnterVR = useCallback(() => {
-		setXrError(null);
-		setSelectedMode("vr");
-	}, []);
 
 	const handleEnterPassthrough = useCallback(() => {
 		setXrError(null);
@@ -53,26 +48,15 @@ export default function Home() {
 					</div>
 					<div className="flex items-center gap-3">
 						{selectedMode === null ? (
-							<>
-								<Button
-									size="lg"
-									className="gap-2"
-									onClick={handleEnterVR}
-									variant="default"
-								>
-									<Monitor className="h-4 w-4" />
-									VR Mode
-								</Button>
-								<Button
-									size="lg"
-									className="gap-2"
-									onClick={handleEnterPassthrough}
-									variant="secondary"
-								>
-									<Glasses className="h-4 w-4" />
-									Passthrough
-								</Button>
-							</>
+							<Button
+								size="lg"
+								className="gap-2"
+								onClick={handleEnterPassthrough}
+								variant="default"
+							>
+								<Glasses className="h-4 w-4" />
+								MR 透视遥操作
+							</Button>
 						) : (
 							<Button
 								size="lg"

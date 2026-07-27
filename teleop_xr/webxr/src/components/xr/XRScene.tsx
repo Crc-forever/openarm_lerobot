@@ -51,20 +51,17 @@ export function XRScene({ mode, onError, onExit }: XRSceneProps) {
 
 		const setup = async () => {
 			try {
-				const isPassthrough = mode === "passthrough";
-				console.log(
-					`[XRScene] Initializing world with mode: ${mode} (passthrough: ${isPassthrough})`,
-				);
+				console.log(`[XRScene] Initializing passthrough world: ${mode}`);
 
-				const world = await initWorld(container, isPassthrough);
+				const world = await initWorld(container);
 				if (!isMounted) {
 					cleanupWorld(world);
 					return;
 				}
 				worldRef.current = world;
 
-				// Always use immersive-ar to ensure stability and consistent reference space
-				// We simulate VR by adding a skybox in initWorld if passthrough is false
+				// immersive-ar lets the PICO compositor show camera passthrough
+				// behind the robot model and tracked controller objects.
 				const sessionMode = SessionMode.ImmersiveAR;
 				const optionalFeatures = [
 					"local-floor",
@@ -91,6 +88,9 @@ export function XRScene({ mode, onError, onExit }: XRSceneProps) {
 				}
 
 				sessionRef.current = session;
+				console.log(
+					`[XRScene] Environment blend mode: ${session.environmentBlendMode}`,
+				);
 				// Always use LocalFloor for AR-based session
 				world.renderer.xr.setReferenceSpaceType(ReferenceSpaceType.LocalFloor);
 				await world.renderer.xr.setSession(session);

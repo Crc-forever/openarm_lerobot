@@ -18,12 +18,7 @@ import {
 	XIcon,
 } from "@pmndrs/uikit-lucide";
 import {
-	BackSide,
 	Euler,
-	GridHelper,
-	Mesh,
-	MeshBasicMaterial,
-	SphereGeometry,
 } from "three";
 import { getCameraEnabled, onCameraConfigChanged } from "./camera_config";
 import { CameraSettingsSystem } from "./camera_settings_system";
@@ -74,19 +69,14 @@ const placeRelative = (
 	obj.translateZ(z);
 };
 
-export const initWorld = async (
-	container: HTMLElement,
-	initialPassthrough = true,
-) => {
+export const initWorld = async (container: HTMLElement) => {
 	initConsoleStream();
 
-	// Always initialize as AR to support consistent session features
-	// We simulate VR by adding an opaque background if passthrough is disabled
+	// Always initialize as AR. Keep the scene background unset so the PICO
+	// compositor can display the real-world camera feed behind virtual objects.
 	const initialMode = SessionMode.ImmersiveAR;
 
-	console.log(
-		`[initWorld] Creating world with sessionMode: ${initialMode} (passthrough: ${initialPassthrough})`,
-	);
+	console.log(`[initWorld] Creating passthrough world: ${initialMode}`);
 
 	const world = await World.create(container as HTMLDivElement, {
 		assets,
@@ -130,27 +120,6 @@ export const initWorld = async (
 	});
 
 	const { camera } = world;
-
-	// If in "VR Mode" (passthrough disabled), add a skybox to hide the real world
-	// This allows us to use immersive-ar consistently while simulating VR
-	if (!initialPassthrough) {
-		const skyGeo = new SphereGeometry(100, 32, 32);
-		const skyMat = new MeshBasicMaterial({
-			color: 0x080808,
-			side: BackSide,
-			depthWrite: false,
-		});
-		const sky = new Mesh(skyGeo, skyMat);
-		const skyEntity = world.createTransformEntity();
-		if (skyEntity.object3D) {
-			skyEntity.object3D.add(sky);
-
-			const grid = new GridHelper(100, 50, 0x00ff00, 0x333333);
-			// Lower the grid slightly to prevent z-fighting
-			grid.position.y = -0.01;
-			skyEntity.object3D.add(grid);
-		}
-	}
 
 	camera.position.set(0, 1, 0.5);
 
