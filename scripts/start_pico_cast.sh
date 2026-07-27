@@ -25,11 +25,12 @@ export ADB="$ADB_BIN"
 exec "$SCRCPY" \
   --serial "${DEVICES[0]}" \
   --window-title "Pico 4 USB 投屏" \
-  --fullscreen \
+  --window-width 1440 \
+  --window-height 810 \
   --shortcut-mod lctrl \
   --no-audio \
   --no-control \
-  --crop 2160:2160:2160:0 \
+  --crop 1920:1080:120:540 \
   --max-size 1920 \
   --max-fps 60 \
   --video-bit-rate 16M \

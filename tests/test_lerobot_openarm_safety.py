@@ -218,7 +218,7 @@ class OpenArmSafetyTests(unittest.TestCase):
                 "gripper",
                 output.gripper_open_deg,
             ),
-            15.0,
+            output._control_limits["gripper"].kp,
         )
         bus._last_known_states["gripper"]["position"] = -1.0
         self.assertEqual(
@@ -227,7 +227,7 @@ class OpenArmSafetyTests(unittest.TestCase):
                 "gripper",
                 output.gripper_closed_deg,
             ),
-            15.0,
+            output._control_limits["gripper"].kp,
         )
 
     def test_pt2_planner_turns_sparse_target_into_small_dense_steps(self):

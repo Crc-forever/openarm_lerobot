@@ -10,7 +10,7 @@
 - [x] TeleopXR、PyRoki 和 OpenArm 模型源码放入本项目。
 - [x] 项目使用一个名为 `lerobot` 的 Conda 环境。
 - [x] Pico 通过 USB/ADB 有线连接。
-- [x] Pico 本机投屏，并以单只右眼画面全屏显示。
+- [x] Pico 本机投屏，使用旧工程验证过的单眼中央 16:9 裁剪全屏显示。
 - [x] Pico 进入 TeleopXR，能够控制虚拟 OpenArm。
 - [x] Pico 位姿经过 PyRoki 生成双臂 IK 关节目标。
 - [x] IK 输出转换成 LeRobot 双臂 OpenArm 标准 action。
