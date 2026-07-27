@@ -99,6 +99,17 @@ class RecordingCameraCapture:
             raise ConnectionError(
                 f"Could not open ordinary camera: {self.scene_device}"
             )
+        # The Sonix scene camera otherwise defaults to uncompressed YUYV,
+        # which consumes about 148 Mbit/s at 640x480@30 on the same USB 2.0
+        # host bus used by the Aurora and USB-CAN adapter. Prefer the camera's
+        # hardware MJPEG stream to leave headroom for the other devices.
+        capture.set(
+            cv2.CAP_PROP_FOURCC,
+            cv2.VideoWriter_fourcc(*"MJPG"),
+        )
+        capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        capture.set(cv2.CAP_PROP_FPS, 30)
         capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self._scene_capture = capture
 
@@ -364,10 +375,15 @@ class RecordingCameraCapture:
             while not self._stop.is_set():
                 try:
                     frames = self.snapshot()
-                except (RuntimeError, TimeoutError):
+                except TimeoutError:
                     if self._stop.wait(0.05):
                         break
                     continue
+                except RuntimeError:
+                    # A worker failure cannot recover through this preview
+                    # loop. Surface it instead of displaying the last frame
+                    # forever and making the application look frozen.
+                    raise
                 panels = [
                     self._rgb_preview(frames["scene"], "Scene RGB"),
                     self._rgb_preview(frames["aurora_rgb"], "Aurora RGB"),
@@ -382,7 +398,10 @@ class RecordingCameraCapture:
                         "Camera preview window was closed; stop recording "
                         "with Ctrl+C in the terminal"
                     )
-                self._stop.wait(1.0 / 30.0)
+                # Aurora depth is a 15 FPS source. Redrawing the same three
+                # frames at 30 Hz only doubles image copies, resizing and
+                # depth colour mapping without making the preview smoother.
+                self._stop.wait(1.0 / 15.0)
         except BaseException as exc:
             if not self._stop.is_set():
                 self._latch_error(exc)

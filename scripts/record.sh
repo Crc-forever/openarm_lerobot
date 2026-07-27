@@ -6,20 +6,36 @@ aurora_ws="${project_dir}/.vendor/aurora930/ws"
 default_scene_camera="/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_SN0001-video-index0"
 scene_camera="${OPENARM_SCENE_CAMERA:-$default_scene_camera}"
 teleop_port="${OPENARM_TELEOP_PORT:-4443}"
+pico_link="${OPENARM_PICO_LINK:-network}"
+dataset_root_display="${project_dir}/data"
+dataset_repo_id_display="local/openarm_vr"
 driver_pid=""
 pico_reverse_active=0
 adb_target=()
+passthrough_args=()
 
 usage() {
   cat <<'EOF'
 用法:
-  ./scripts/record.sh --dataset-task "任务描述" [其他 LeRobot 参数]
+  ./scripts/record.sh --dataset-task "任务描述" --num-episodes N [采集参数]
 
 示例:
-  ./scripts/record.sh --dataset-task "拿起桌面的水杯"
+  ./scripts/record.sh --dataset-task "拿起桌面的水杯" --num-episodes 20
+
+连接参数:
+  --pico-link network|usb  Pico 连接方式，默认 network（局域网）
+
+常用采集参数:
+  --num-episodes N          本次需要成功保存的 episode 数量（必填）
+  --dataset-repo-id ID     数据集标识，默认 local/openarm_vr
+  --dataset-root DIR       保存根目录，默认项目下 data/
+  --dataset-fps FPS        采集帧率，默认 15
+  --no-camera-preview      不显示本机三路相机预览
 
 环境变量:
-  OPENARM_SCENE_CAMERA=/dev/videoN  临时指定普通外接相机
+  OPENARM_SCENE_CAMERA=/dev/videoN       临时指定普通外接相机
+  OPENARM_TELEOP_PORT=4443               修改服务端口
+  OPENARM_PICO_LINK=network|usb          设置默认连接方式
 EOF
 }
 
@@ -45,18 +61,73 @@ cleanup() {
 trap cleanup EXIT
 
 has_dataset_task=0
-for argument in "$@"; do
+has_dataset_fps=0
+has_num_episodes=0
+num_episodes_value=""
+while (( $# > 0 )); do
+  argument="$1"
   if [[ "$argument" == "-h" || "$argument" == "--help" ]]; then
     usage
     exit 0
   fi
+  if [[ "$argument" == "--pico-link" ]]; then
+    if (( $# < 2 )); then
+      echo "--pico-link 后必须填写 network 或 usb。" >&2
+      exit 2
+    fi
+    pico_link="$2"
+    shift 2
+    continue
+  fi
+  if [[ "$argument" == --pico-link=* ]]; then
+    pico_link="${argument#*=}"
+    shift
+    continue
+  fi
   if [[ "$argument" == "--dataset-task" || "$argument" == --dataset-task=* ]]; then
     has_dataset_task=1
   fi
+  if [[ "$argument" == "--dataset-fps" || "$argument" == --dataset-fps=* ]]; then
+    has_dataset_fps=1
+  fi
+  if [[ "$argument" == "--num-episodes" ]]; then
+    has_num_episodes=1
+    if (( $# > 1 )); then
+      num_episodes_value="$2"
+    fi
+  elif [[ "$argument" == --num-episodes=* ]]; then
+    has_num_episodes=1
+    num_episodes_value="${argument#*=}"
+  fi
+  if [[ "$argument" == "--dataset-root" && $# -gt 1 ]]; then
+    dataset_root_display="$2"
+  elif [[ "$argument" == --dataset-root=* ]]; then
+    dataset_root_display="${argument#*=}"
+  elif [[ "$argument" == "--dataset-repo-id" && $# -gt 1 ]]; then
+    dataset_repo_id_display="$2"
+  elif [[ "$argument" == --dataset-repo-id=* ]]; then
+    dataset_repo_id_display="${argument#*=}"
+  fi
+  passthrough_args+=("$argument")
+  shift
 done
+
+if [[ "$pico_link" != "network" && "$pico_link" != "usb" ]]; then
+  echo "无效的 Pico 连接方式: $pico_link（只能是 network 或 usb）。" >&2
+  exit 2
+fi
 if (( ! has_dataset_task )); then
   echo "必须使用 --dataset-task 填写本次采集任务。" >&2
   usage >&2
+  exit 2
+fi
+if (( ! has_num_episodes )); then
+  echo "必须使用 --num-episodes 填写本次采集数量。" >&2
+  usage >&2
+  exit 2
+fi
+if [[ ! "$num_episodes_value" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--num-episodes 必须是正整数，当前值: ${num_episodes_value:-缺失}" >&2
   exit 2
 fi
 
@@ -69,31 +140,50 @@ if ! lsusb | grep -q '3251:1930'; then
   echo "未检测到 Aurora 930 (USB 3251:1930)。" >&2
   exit 1
 fi
-if ! command -v adb >/dev/null 2>&1; then
-  echo "未安装 adb，无法建立 Pico USB 通道。" >&2
-  exit 1
-fi
-if [[ -n "${ADB_SERIAL:-}" ]]; then
-  adb_target=(-s "$ADB_SERIAL")
-  if [[ "$(adb "${adb_target[@]}" get-state 2>/dev/null || true)" != "device" ]]; then
-    echo "ADB_SERIAL 指定的 Pico 未连接或未授权: $ADB_SERIAL" >&2
+if [[ "$pico_link" == "usb" ]]; then
+  if ! command -v adb >/dev/null 2>&1; then
+    echo "未安装 adb，无法建立 Pico USB 通道。" >&2
     exit 1
   fi
+  if [[ -n "${ADB_SERIAL:-}" ]]; then
+    adb_target=(-s "$ADB_SERIAL")
+    if [[ "$(adb "${adb_target[@]}" get-state 2>/dev/null || true)" != "device" ]]; then
+      echo "ADB_SERIAL 指定的 Pico 未连接或未授权: $ADB_SERIAL" >&2
+      exit 1
+    fi
+  else
+    mapfile -t pico_devices < <(
+      adb devices | awk 'NR > 1 && $2 == "device" {print $1}'
+    )
+    mapfile -t unauthorized_devices < <(
+      adb devices | awk 'NR > 1 && $2 == "unauthorized" {print $1}'
+    )
+    if (( ${#unauthorized_devices[@]} > 0 )); then
+      echo "Pico 尚未授权 USB 调试，请在头显中选择始终允许。" >&2
+      exit 1
+    fi
+    if (( ${#pico_devices[@]} != 1 )); then
+      echo "USB 模式需要连接一台已授权 Pico，当前识别到 ${#pico_devices[@]} 台。" >&2
+      exit 1
+    fi
+  fi
+
+  adb "${adb_target[@]}" reverse \
+    "tcp:${teleop_port}" "tcp:${teleop_port}"
+  pico_reverse_active=1
+  teleop_host="127.0.0.1"
+  pico_url="https://localhost:${teleop_port}"
 else
-  mapfile -t pico_devices < <(
-    adb devices | awk 'NR > 1 && $2 == "device" {print $1}'
-  )
-  mapfile -t unauthorized_devices < <(
-    adb devices | awk 'NR > 1 && $2 == "unauthorized" {print $1}'
-  )
-  if (( ${#unauthorized_devices[@]} > 0 )); then
-    echo "Pico 尚未授权 USB 调试，请在头显中选择始终允许。" >&2
+  teleop_host="0.0.0.0"
+  lan_ip="$(
+    ip -4 -o addr show up scope global 2>/dev/null |
+      awk '$2 != "Meta" {split($4, address, "/"); print address[1]; exit}'
+  )"
+  if [[ -z "$lan_ip" ]]; then
+    echo "未找到可供 Pico 访问的局域网 IPv4 地址。" >&2
     exit 1
   fi
-  if (( ${#pico_devices[@]} != 1 )); then
-    echo "需要连接一台已授权 Pico，当前识别到 ${#pico_devices[@]} 台。" >&2
-    exit 1
-  fi
+  pico_url="https://${lan_ip}:${teleop_port}"
 fi
 if ss -H -ltn "sport = :${teleop_port}" | grep -q .; then
   echo "端口 ${teleop_port} 已被占用，请先停止旧的 TeleopXR 进程。" >&2
@@ -112,18 +202,39 @@ if pgrep -f '/aurora930_node' >/dev/null 2>&1; then
   exit 1
 fi
 
-adb "${adb_target[@]}" reverse \
-  "tcp:${teleop_port}" "tcp:${teleop_port}"
-pico_reverse_active=1
+for can_iface in can0 can1; do
+  if [[ ! -e "/sys/class/net/${can_iface}" ]]; then
+    echo "${can_iface} 不存在。请先在另一个终端完成 CAN 初始化。" >&2
+    exit 1
+  fi
+  can_details="$(ip -details link show "$can_iface" 2>/dev/null || true)"
+  if [[ "$can_details" != *"UP"* ]]; then
+    echo "${can_iface} 不是 UP 状态。请先执行你自己的 CAN 初始化命令。" >&2
+    exit 1
+  fi
+  if [[ "$can_details" != *"state ERROR-ACTIVE"* ]]; then
+    echo "${can_iface} 不是 ERROR-ACTIVE 状态，拒绝开始采集。" >&2
+    echo "$can_details" >&2
+    exit 1
+  fi
+done
 
-"${project_dir}/scripts/setup_can.sh"
-
+# ROS setup files reference optional variables and are not compatible with
+# nounset. Temporarily relax only that shell option while sourcing them.
+set +u
 source /opt/ros/jazzy/setup.bash
 source "${aurora_ws}/install/setup.bash"
+set -u
 
 mkdir -p "${project_dir}/logs"
 driver_log="${project_dir}/logs/aurora930-recording.log"
 ros2 launch deptrum-ros-driver-aurora930 aurora930_launch.py \
+  ir_enable:=false \
+  point_cloud_enable:=false \
+  rgbd_enable:=false \
+  align_mode:=true \
+  depth_correction:=true \
+  resolution_mode_index:=1 \
   >"$driver_log" 2>&1 &
 driver_pid=$!
 
@@ -154,18 +265,10 @@ export XDG_DATA_HOME="${HOME}/.local/share"
 export XDG_DATA_DIRS="${XDG_DATA_DIRS_VSCODE_SNAP_ORIG:-/usr/local/share:/usr/share}"
 export QT_QPA_FONTDIR="/usr/share/fonts/truetype/dejavu"
 
-has_dataset_fps=0
-for argument in "$@"; do
-  if [[ "$argument" == "--dataset-fps" || "$argument" == --dataset-fps=* ]]; then
-    has_dataset_fps=1
-    break
-  fi
-done
-
 record_args=(
   --record-cameras
   --scene-camera-device "$scene_camera"
-  --host 127.0.0.1
+  --host "$teleop_host"
   --port "$teleop_port"
 )
 if (( ! has_dataset_fps )); then
@@ -173,10 +276,14 @@ if (( ! has_dataset_fps )); then
 fi
 
 echo "双摄像头已就绪，开始 OpenArm 数据采集。"
-echo "数据目录: ${project_dir}/data"
-echo "Pico 浏览器地址: https://localhost:${teleop_port}"
+dataset_dir="${dataset_root_display%/}/${dataset_repo_id_display//\//_}"
+echo "数据集目录: ${dataset_dir}"
+echo "本次目标: ${num_episodes_value} 个 episode"
+echo "Pico 连接方式: ${pico_link}"
+echo "Pico 浏览器地址: ${pico_url}"
+echo "手柄按键: A 开始，B 放弃，X 保存"
 echo "结束并保存: 回到本终端按 Ctrl+C"
 
 "${project_dir}/scripts/start.sh" record \
   "${record_args[@]}" \
-  "$@"
+  "${passthrough_args[@]}"

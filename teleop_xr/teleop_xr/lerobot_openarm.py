@@ -301,6 +301,24 @@ class LeRobotOpenArmOutput:
         with self._lifecycle_lock:
             return dict(self._arm_power_state)
 
+    def start_recording_episode(self) -> tuple[int, int]:
+        """Start accepting frames for one episode."""
+        if self._recorder is None:
+            raise RuntimeError("Dataset recording is not enabled")
+        return self._recorder.start_episode()
+
+    def discard_recording_episode(self) -> bool:
+        """Discard the active episode and return to waiting."""
+        if self._recorder is None:
+            raise RuntimeError("Dataset recording is not enabled")
+        return self._recorder.discard_episode()
+
+    def finish_recording_episode(self) -> tuple[bool, int, int]:
+        """Save one episode without stopping robot control or the dataset."""
+        if self._recorder is None:
+            raise RuntimeError("Dataset recording is not enabled")
+        return self._recorder.finish_episode()
+
     def build_action(
         self,
         joint_names: Sequence[str],

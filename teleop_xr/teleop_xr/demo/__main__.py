@@ -7,6 +7,8 @@ import sys
 import os
 import signal
 import select
+import queue
+import subprocess
 import numpy as np
 import tyro
 from loguru import logger as loguru_logger
@@ -102,10 +104,10 @@ class DemoCLI(CommonCLI):
     """SocketCAN interface for the right arm."""
 
     record: bool = False
-    """Record one LeRobot episode until the process exits."""
+    """Enable state-controlled multi-episode LeRobot recording."""
 
     dataset_root: str = "data"
-    """Directory under which a timestamped dataset session is created."""
+    """Parent directory containing the stable dataset repository directory."""
 
     dataset_repo_id: str = "local/openarm_vr"
     """LeRobot dataset repository identifier stored in metadata."""
@@ -115,6 +117,9 @@ class DemoCLI(CommonCLI):
 
     dataset_fps: int = 20
     """Target dataset frame rate."""
+
+    num_episodes: int = 0
+    """Episodes to record in this run; 0 means no automatic stop."""
 
     record_cameras: bool = False
     """Record the ordinary RGB camera and Aurora RGB/depth streams."""
@@ -396,7 +401,6 @@ def generate_ik_controls_panel() -> Panel:
     text.append("\n• Press ", style="dim")
     text.append("R", style="bold cyan")
     text.append(" to reload robot class (keep solver/JIT)", style="dim")
-
     return Panel(
         text,
         title="[bold blue]IK Key Bindings[/bold blue]",
@@ -860,6 +864,8 @@ def main():
         raise SystemExit("--lerobot requires --mode ik")
     if cli.record and not cli.hardware:
         raise SystemExit("--record requires --hardware for motor feedback")
+    if cli.num_episodes < 0:
+        raise SystemExit("--num-episodes must be positive, or 0 for unlimited")
 
     # Refuse before importing IK or opening CAN if another server/process owns
     # this hardware session. Previously a second process could connect CAN and
@@ -1086,29 +1092,226 @@ def main():
 
         processor.on_double_press(button=XRButton.SQUEEZE, callback=on_reset_pose)
 
-        # ── 左夹爪控制：X 键按住闭合，松开张开 ────────────────
-        def on_gripper_close(event: ButtonEvent):
-            if event.controller == XRController.LEFT:
-                state_container["gripper_closed"] = True
-                print(f"{GREEN}[夹爪] 闭合{RESET}")
+        if cli.record and action_output is not None:
+            recording_operation_lock = threading.Lock()
+            speech_queue: queue.Queue[tuple[str, threading.Event | None]] = (
+                queue.Queue()
+            )
 
-        def on_gripper_open(event: ButtonEvent):
-            if event.controller == XRController.LEFT:
-                state_container["gripper_closed"] = False
-                print(f"{YELLOW}[夹爪] 张开{RESET}")
+            def _local_speech_worker() -> None:
+                while True:
+                    text, sent_event = speech_queue.get()
+                    try:
+                        subprocess.run(
+                            ["spd-say", "--cancel"],
+                            check=False,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=2.0,
+                        )
+                        subprocess.run(
+                            [
+                                "spd-say",
+                                "--output-module",
+                                "espeak-ng",
+                                "--language",
+                                "en",
+                                "--rate",
+                                "10",
+                                "--volume",
+                                "20",
+                                "--priority",
+                                "important",
+                                "--connection-name",
+                                "openarm-recording",
+                                text,
+                            ],
+                            check=False,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=2.0,
+                        )
+                    except (OSError, subprocess.SubprocessError) as exc:
+                        logger.warning(f"Local voice prompt failed: {exc}")
+                    finally:
+                        if sent_event is not None:
+                            sent_event.set()
+                        speech_queue.task_done()
 
-        processor.on_button_down(
-            button=XRButton.BUTTON_PRIMARY,
-            controller=XRController.LEFT,
-            callback=on_gripper_close,
-        )
-        processor.on_button_up(
-            button=XRButton.BUTTON_PRIMARY,
-            controller=XRController.LEFT,
-            callback=on_gripper_open,
-        )
-        # 初始化夹爪状态
-        state_container["gripper_closed"] = False
+            threading.Thread(
+                target=_local_speech_worker,
+                name="recording-local-speech",
+                daemon=True,
+            ).start()
+
+            def announce_recording_status(
+                text: str,
+                *,
+                wait_until_sent: bool = False,
+            ) -> None:
+                sent_event = threading.Event() if wait_until_sent else None
+                speech_queue.put((text, sent_event))
+                if sent_event is not None and not sent_event.wait(timeout=3.0):
+                    logger.warning("Local voice prompt timed out")
+
+            def on_record_start(_event: ButtonEvent) -> None:
+                if state_container.get("recording_status") != "waiting":
+                    announce_recording_status(
+                        "Recording in progress. Press X to save, or B to discard."
+                    )
+                    return
+                if not recording_operation_lock.acquire(blocking=False):
+                    logger.info("Recording operation is already in progress")
+                    announce_recording_status(
+                        "Please wait. The previous operation is still in progress."
+                    )
+                    return
+                try:
+                    session_index, existing_count = (
+                        action_output.start_recording_episode()
+                    )
+                    target_text = (
+                        str(cli.num_episodes)
+                        if cli.num_episodes > 0
+                        else "unlimited"
+                    )
+                    state_container["recording_status"] = "recording"
+                    logger.info(
+                        "Recording started: session episode "
+                        f"{session_index}/{target_text}; dataset already has "
+                        f"{existing_count} saved episode(s)"
+                    )
+                    announce_recording_status(
+                        f"Recording episode {session_index}."
+                    )
+                except Exception as exc:
+                    logger.warning(f"Cannot start recording: {exc}")
+                    announce_recording_status(
+                        "Failed to start recording. Check the computer."
+                    )
+                finally:
+                    recording_operation_lock.release()
+
+            def _run_recording_operation(
+                operation_name: str,
+                operation: Any,
+            ) -> None:
+                if not recording_operation_lock.acquire(blocking=False):
+                    logger.info("Recording operation is already in progress")
+                    announce_recording_status(
+                        "Please wait. The previous operation is still in progress."
+                    )
+                    return
+
+                def _worker() -> None:
+                    try:
+                        operation()
+                    except Exception as exc:
+                        logger.error(f"{operation_name} failed: {exc}")
+                        announce_recording_status(
+                            "Recording operation failed. Check the computer."
+                        )
+                    finally:
+                        recording_operation_lock.release()
+
+                threading.Thread(
+                    target=_worker,
+                    name=f"recording-{operation_name}",
+                    daemon=True,
+                ).start()
+
+            def on_record_discard(_event: ButtonEvent) -> None:
+                if state_container.get("recording_status") != "recording":
+                    announce_recording_status(
+                        "No recording is in progress."
+                    )
+                    return
+
+                def _discard() -> None:
+                    discarded = action_output.discard_recording_episode()
+                    state_container["recording_status"] = "waiting"
+                    if discarded:
+                        logger.info(
+                            "Current episode discarded; waiting for A"
+                        )
+                        announce_recording_status(
+                            "Episode discarded. Ready for the next episode."
+                        )
+                    else:
+                        logger.info(
+                            "Current episode had no frames; waiting for A"
+                        )
+                        announce_recording_status(
+                            "No valid data. Ready for the next episode."
+                        )
+
+                _run_recording_operation("discard", _discard)
+
+            def on_record_finish(_event: ButtonEvent) -> None:
+                if state_container.get("recording_status") != "recording":
+                    announce_recording_status(
+                        "No recording is in progress."
+                    )
+                    return
+
+                def _finish() -> None:
+                    saved, session_count, dataset_count = (
+                        action_output.finish_recording_episode()
+                    )
+                    state_container["recording_status"] = "waiting"
+                    if not saved:
+                        logger.info(
+                            "Current episode had no frames; waiting for A"
+                        )
+                        announce_recording_status(
+                            "No valid data. Episode was not saved."
+                        )
+                        return
+                    logger.info(
+                        f"Episode saved: this run {session_count}, "
+                        f"dataset total {dataset_count}"
+                    )
+                    if (
+                        cli.num_episodes > 0
+                        and session_count >= cli.num_episodes
+                    ):
+                        logger.info(
+                            f"Target of {cli.num_episodes} episode(s) reached; "
+                            "finishing dataset"
+                        )
+                        announce_recording_status(
+                            f"Episode {session_count} saved. Recording complete.",
+                            wait_until_sent=True,
+                        )
+                        os.kill(os.getpid(), signal.SIGINT)
+                    else:
+                        announce_recording_status(
+                            f"Episode {session_count} saved. Ready for the next episode."
+                        )
+
+                _run_recording_operation("finish", _finish)
+
+            # Pico xr-standard mapping: right A=primary, right B=secondary,
+            # left X=primary.
+            processor.on_button_down(
+                button=XRButton.BUTTON_PRIMARY,
+                controller=XRController.RIGHT,
+                callback=on_record_start,
+            )
+            processor.on_button_down(
+                button=XRButton.BUTTON_SECONDARY,
+                controller=XRController.RIGHT,
+                callback=on_record_discard,
+            )
+            processor.on_button_down(
+                button=XRButton.BUTTON_PRIMARY,
+                controller=XRController.LEFT,
+                callback=on_record_finish,
+            )
+            state_container["recording_status"] = "waiting"
+            logger.info(
+                "Recording controls ready: A=start, B=discard, X=save"
+            )
 
     # --- IK Worker Setup ---
     if cli.mode == "ik" and controller and robot:
