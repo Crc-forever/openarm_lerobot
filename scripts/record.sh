@@ -3,6 +3,7 @@ set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 aurora_ws="${project_dir}/.vendor/aurora930/ws"
+tls_dir="${project_dir}/teleop_xr/teleop_xr"
 scene_camera="${OPENARM_SCENE_CAMERA:-}"
 scene_camera_secondary="${OPENARM_SCENE_CAMERA_SECONDARY:-}"
 teleop_port="${OPENARM_TELEOP_PORT:-4443}"
@@ -38,6 +39,33 @@ usage() {
   OPENARM_TELEOP_PORT=4443                     修改服务端口
   OPENARM_PICO_LINK=network|usb                设置默认连接方式
 EOF
+}
+
+ensure_tls_certificate() {
+  local cert_file="${tls_dir}/cert.pem"
+  local key_file="${tls_dir}/key.pem"
+
+  if [[ -s "$cert_file" && -s "$key_file" ]]; then
+    return
+  fi
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "缺少 openssl，无法为 Pico HTTPS 连接生成本机证书。" >&2
+    echo "请先安装 openssl 后重新运行本命令。" >&2
+    exit 1
+  fi
+
+  echo "未找到 Pico HTTPS 证书，正在自动生成……"
+  mkdir -p "$tls_dir"
+  if ! openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -subj "/CN=OpenArm TeleopXR" \
+    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+    -keyout "$key_file" \
+    -out "$cert_file" \
+    >/dev/null 2>&1; then
+    echo "Pico HTTPS 证书生成失败。" >&2
+    exit 1
+  fi
+  chmod 600 "$key_file"
 }
 
 cleanup() {
@@ -131,6 +159,8 @@ if [[ ! "$num_episodes_value" =~ ^[1-9][0-9]*$ ]]; then
   echo "--num-episodes 必须是正整数，当前值: ${num_episodes_value:-缺失}" >&2
   exit 2
 fi
+
+ensure_tls_certificate
 
 discover_ordinary_cameras() {
   local camera_path
