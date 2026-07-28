@@ -16,7 +16,7 @@ sudo ip link set can1 up
 
 
 # 启动局域网遥操作
-./scripts/start.sh robot -host 0.0.0.0 --port 4443
+./scripts/start.sh robot --host 0.0.0.0 --port 4443
 
 # PICO打开
 https://192.168.43.84:4443

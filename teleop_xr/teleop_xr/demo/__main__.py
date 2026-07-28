@@ -125,7 +125,10 @@ class DemoCLI(CommonCLI):
     """Record the ordinary RGB camera and Aurora RGB/depth streams."""
 
     scene_camera_device: str = "/dev/video2"
-    """Stable V4L2 path for the ordinary external camera."""
+    """Stable V4L2 path for the primary ordinary external camera."""
+
+    scene_camera_secondary_device: str = "/dev/video4"
+    """Stable V4L2 path for the secondary ordinary external camera."""
 
     camera_preview: bool = True
     """Show all recording camera streams in a local OpenCV window."""
@@ -1012,6 +1015,9 @@ def main():
                 dataset_fps=cli.dataset_fps,
                 record_cameras=cli.record_cameras,
                 scene_camera_device=cli.scene_camera_device,
+                scene_camera_secondary_device=(
+                    cli.scene_camera_secondary_device
+                ),
                 camera_preview=cli.camera_preview,
             )
             action_output.connect()

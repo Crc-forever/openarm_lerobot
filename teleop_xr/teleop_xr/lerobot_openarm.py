@@ -88,6 +88,7 @@ class LeRobotOpenArmOutput:
         dataset_fps: int = 20,
         record_cameras: bool = False,
         scene_camera_device: str = "/dev/video2",
+        scene_camera_secondary_device: str = "/dev/video4",
         camera_preview: bool = True,
         feedback_timeout_s: float | None = None,
         input_timeout_s: float | None = None,
@@ -151,6 +152,7 @@ class LeRobotOpenArmOutput:
         self.dataset_fps = dataset_fps
         self.record_cameras = record_cameras
         self.scene_camera_device = scene_camera_device
+        self.scene_camera_secondary_device = scene_camera_secondary_device
         self.camera_preview = camera_preview
         configured_feedback_timeout, configured_input_timeout = (
             load_control_timeouts(self.control_config_path)
@@ -241,6 +243,9 @@ class LeRobotOpenArmOutput:
 
                     self._camera_capture = RecordingCameraCapture(
                         scene_device=self.scene_camera_device,
+                        scene_secondary_device=(
+                            self.scene_camera_secondary_device
+                        ),
                         preview=self.camera_preview,
                     )
                     self._camera_capture.connect()

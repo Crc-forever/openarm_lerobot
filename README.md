@@ -46,7 +46,9 @@ Openarm_lerobot/
 ./scripts/install.sh --with-ik
 ```
 
-该选项安装 CPU 版 JAX，不安装 CUDA，也不修改显卡驱动。
+该选项安装带 CUDA 12 运行库的 JAX 0.6.2，以 NVIDIA GPU 加速 IK。
+CUDA 运行库由 Python wheel 管理，不要求单独安装系统 CUDA Toolkit，也不
+修改显卡驱动。
 
 ## 启动
 

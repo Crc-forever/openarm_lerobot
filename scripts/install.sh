@@ -35,7 +35,7 @@ TELEOP_XR_SKIP_WEBXR_BUILD=1 \
   "${PYTHON[@]}" -m pip install --editable "$PROJECT_DIR/teleop_xr"
 
 if [[ "$WITH_IK" == true ]]; then
-  "${PYTHON[@]}" -m pip install "jax==0.6.2" "jaxlib==0.6.2"
+  "${PYTHON[@]}" -m pip install "jax[cuda12]==0.6.2"
   "${PYTHON[@]}" -m pip install --editable "$PROJECT_DIR/pyroki"
   "${PYTHON[@]}" -m pip install \
     "gitpython>=3.1.46" \

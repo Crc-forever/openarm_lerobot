@@ -7,15 +7,17 @@ import sys
 
 def ensure_ik_dependencies():
     """
-    Check and configure JAX for IK mode.
+    Check that JAX is available for IK mode.
+
+    JAX selects the best available backend automatically. Set the standard
+    ``JAX_PLATFORMS=cpu`` environment variable when an explicit CPU fallback
+    is needed.
 
     Raises:
         SystemExit: If JAX is not installed, exits with code 1.
     """
     try:
-        import jax
-
-        jax.config.update("jax_platform_name", "cpu")
+        import jax  # noqa: F401
     except ImportError:
         print(
             "Error: JAX is required for IK mode. "

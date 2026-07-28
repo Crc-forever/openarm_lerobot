@@ -18,19 +18,25 @@ logger = logging.getLogger(__name__)
 
 
 class RecordingCameraCapture:
-    """Keep latest frames from one V4L2 camera and one Aurora ROS camera.
+    """Keep latest frames from two V4L2 cameras and one Aurora ROS camera.
 
     ROS callbacks and V4L2 reads run independently from the CAN output loop.
     A dataset tick only copies the latest complete frame set, so camera I/O can
     never block motor commands.
     """
 
-    _FRAME_KEYS = ("scene", "aurora_rgb", "aurora_depth")
+    _FRAME_KEYS = (
+        "scene",
+        "scene_secondary",
+        "aurora_rgb",
+        "aurora_depth",
+    )
 
     def __init__(
         self,
         *,
         scene_device: str,
+        scene_secondary_device: str,
         aurora_rgb_topic: str = "/aurora/rgb/image_raw",
         aurora_depth_topic: str = "/aurora/depth/image_raw",
         aurora_rgb_info_topic: str = "/aurora/rgb/camera_info",
@@ -43,6 +49,9 @@ class RecordingCameraCapture:
             raise ValueError("Camera timeouts must be positive")
 
         self.scene_device = str(Path(scene_device).expanduser())
+        self.scene_secondary_device = str(
+            Path(scene_secondary_device).expanduser()
+        )
         self.aurora_rgb_topic = aurora_rgb_topic
         self.aurora_depth_topic = aurora_depth_topic
         self.aurora_rgb_info_topic = aurora_rgb_info_topic
@@ -58,8 +67,8 @@ class RecordingCameraCapture:
         self._error: BaseException | None = None
         self._connected = False
 
-        self._scene_capture: cv2.VideoCapture | None = None
-        self._scene_thread: threading.Thread | None = None
+        self._scene_captures: dict[str, cv2.VideoCapture] = {}
+        self._scene_threads: list[threading.Thread] = []
         self._ros_thread: threading.Thread | None = None
         self._preview_thread: threading.Thread | None = None
         self._preview_ready = threading.Event()
@@ -85,7 +94,19 @@ class RecordingCameraCapture:
             return
         if not Path(self.scene_device).exists():
             raise FileNotFoundError(
-                f"Ordinary camera device does not exist: {self.scene_device}"
+                f"Primary ordinary camera does not exist: {self.scene_device}"
+            )
+        if not Path(self.scene_secondary_device).exists():
+            raise FileNotFoundError(
+                "Secondary ordinary camera does not exist: "
+                f"{self.scene_secondary_device}"
+            )
+        if (
+            Path(self.scene_device).resolve()
+            == Path(self.scene_secondary_device).resolve()
+        ):
+            raise ValueError(
+                "Primary and secondary ordinary cameras resolve to the same device"
             )
         if self.preview and not os.environ.get("DISPLAY"):
             raise RuntimeError(
@@ -93,34 +114,37 @@ class RecordingCameraCapture:
             )
 
         cv2.setNumThreads(1)
-        capture = cv2.VideoCapture(self.scene_device, cv2.CAP_V4L2)
-        if not capture.isOpened():
-            capture.release()
-            raise ConnectionError(
-                f"Could not open ordinary camera: {self.scene_device}"
-            )
-        # The Sonix scene camera otherwise defaults to uncompressed YUYV,
-        # which consumes about 148 Mbit/s at 640x480@30 on the same USB 2.0
-        # host bus used by the Aurora and USB-CAN adapter. Prefer the camera's
-        # hardware MJPEG stream to leave headroom for the other devices.
-        capture.set(
-            cv2.CAP_PROP_FOURCC,
-            cv2.VideoWriter_fourcc(*"MJPG"),
+        primary_capture = self._open_scene_camera(
+            self.scene_device, "primary"
         )
-        capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        capture.set(cv2.CAP_PROP_FPS, 30)
-        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self._scene_capture = capture
+        try:
+            secondary_capture = self._open_scene_camera(
+                self.scene_secondary_device, "secondary"
+            )
+        except BaseException:
+            primary_capture.release()
+            raise
+        self._scene_captures = {
+            "scene": primary_capture,
+            "scene_secondary": secondary_capture,
+        }
 
         try:
             self._start_ros()
-            self._scene_thread = threading.Thread(
-                target=self._scene_loop,
-                name="openarm-scene-camera",
-                daemon=True,
-            )
-            self._scene_thread.start()
+            for key, capture in self._scene_captures.items():
+                device = (
+                    self.scene_device
+                    if key == "scene"
+                    else self.scene_secondary_device
+                )
+                thread = threading.Thread(
+                    target=self._scene_loop,
+                    args=(key, device, capture),
+                    name=f"openarm-{key}-camera",
+                    daemon=True,
+                )
+                self._scene_threads.append(thread)
+                thread.start()
             self._wait_for_initial_frames()
             if self.preview:
                 self._preview_thread = threading.Thread(
@@ -140,6 +164,29 @@ class RecordingCameraCapture:
         except BaseException:
             self.close()
             raise
+
+    @staticmethod
+    def _open_scene_camera(
+        device: str, label: str
+    ) -> cv2.VideoCapture:
+        capture = cv2.VideoCapture(device, cv2.CAP_V4L2)
+        if not capture.isOpened():
+            capture.release()
+            raise ConnectionError(
+                f"Could not open {label} ordinary camera: {device}"
+            )
+        # The ordinary cameras otherwise default to uncompressed YUYV,
+        # which consumes about 148 Mbit/s at 640x480@30 on the same USB 2.0
+        # host bus. Prefer each camera's hardware MJPEG stream.
+        capture.set(
+            cv2.CAP_PROP_FOURCC,
+            cv2.VideoWriter_fourcc(*"MJPG"),
+        )
+        capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        capture.set(cv2.CAP_PROP_FPS, 30)
+        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return capture
 
     def _start_ros(self) -> None:
         try:
@@ -195,23 +242,28 @@ class RecordingCameraCapture:
             if not self._stop.is_set():
                 self._latch_error(exc)
 
-    def _scene_loop(self) -> None:
+    def _scene_loop(
+        self,
+        key: str,
+        device: str,
+        capture: cv2.VideoCapture,
+    ) -> None:
         failures = 0
         try:
             while not self._stop.is_set():
-                ok, bgr = self._scene_capture.read()
+                ok, bgr = capture.read()
                 if not ok or bgr is None:
                     failures += 1
                     if failures >= 10:
                         raise RuntimeError(
                             f"Ordinary camera stopped returning frames: "
-                            f"{self.scene_device}"
+                            f"{device}"
                         )
                     time.sleep(0.02)
                     continue
                 failures = 0
                 rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-                self._store_frame("scene", rgb)
+                self._store_frame(key, rgb)
         except BaseException as exc:
             if not self._stop.is_set():
                 self._latch_error(exc)
@@ -349,6 +401,10 @@ class RecordingCameraCapture:
                     "device": self.scene_device,
                     "streams": ["scene"],
                 },
+                "scene_secondary": {
+                    "device": self.scene_secondary_device,
+                    "streams": ["scene_secondary"],
+                },
                 "aurora930": {
                     "rgb_topic": self.aurora_rgb_topic,
                     "depth_topic": self.aurora_depth_topic,
@@ -385,20 +441,29 @@ class RecordingCameraCapture:
                     # forever and making the application look frozen.
                     raise
                 panels = [
-                    self._rgb_preview(frames["scene"], "Scene RGB"),
+                    self._rgb_preview(frames["scene"], "Scene RGB 1"),
+                    self._rgb_preview(
+                        frames["scene_secondary"], "Scene RGB 2"
+                    ),
                     self._rgb_preview(frames["aurora_rgb"], "Aurora RGB"),
                     self._depth_preview(
                         frames["aurora_depth"], "Aurora Depth (0.15-4.0 m)"
                     ),
                 ]
-                cv2.imshow(window, np.hstack(panels))
+                preview_grid = np.vstack(
+                    (
+                        np.hstack(panels[:2]),
+                        np.hstack(panels[2:]),
+                    )
+                )
+                cv2.imshow(window, preview_grid)
                 cv2.waitKey(1)
                 if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
                     raise RuntimeError(
                         "Camera preview window was closed; stop recording "
                         "with Ctrl+C in the terminal"
                     )
-                # Aurora depth is a 15 FPS source. Redrawing the same three
+                # Aurora depth is a 15 FPS source. Redrawing the same four
                 # frames at 30 Hz only doubles image copies, resizing and
                 # depth colour mapping without making the preview smoother.
                 self._stop.wait(1.0 / 15.0)
@@ -475,18 +540,18 @@ class RecordingCameraCapture:
 
     def close(self) -> None:
         self._stop.set()
-        capture = self._scene_capture
-        if capture is not None:
+        for capture in self._scene_captures.values():
             capture.release()
-            self._scene_capture = None
+        self._scene_captures.clear()
 
         for thread in (
-            self._scene_thread,
+            *self._scene_threads,
             self._ros_thread,
             self._preview_thread,
         ):
             if thread is not None and thread is not threading.current_thread():
                 thread.join(timeout=2.0)
+        self._scene_threads.clear()
 
         if self._ros_node is not None:
             try:

@@ -3,8 +3,8 @@ set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 aurora_ws="${project_dir}/.vendor/aurora930/ws"
-default_scene_camera="/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_SN0001-video-index0"
-scene_camera="${OPENARM_SCENE_CAMERA:-$default_scene_camera}"
+scene_camera="${OPENARM_SCENE_CAMERA:-}"
+scene_camera_secondary="${OPENARM_SCENE_CAMERA_SECONDARY:-}"
 teleop_port="${OPENARM_TELEOP_PORT:-4443}"
 pico_link="${OPENARM_PICO_LINK:-network}"
 dataset_root_display="${project_dir}/data"
@@ -30,12 +30,13 @@ usage() {
   --dataset-repo-id ID     数据集标识，默认 local/openarm_vr
   --dataset-root DIR       保存根目录，默认项目下 data/
   --dataset-fps FPS        采集帧率，默认 15
-  --no-camera-preview      不显示本机三路相机预览
+  --no-camera-preview      不显示本机四路图像预览
 
 环境变量:
-  OPENARM_SCENE_CAMERA=/dev/videoN       临时指定普通外接相机
-  OPENARM_TELEOP_PORT=4443               修改服务端口
-  OPENARM_PICO_LINK=network|usb          设置默认连接方式
+  OPENARM_SCENE_CAMERA=/dev/videoN             指定普通相机 1
+  OPENARM_SCENE_CAMERA_SECONDARY=/dev/videoN   指定普通相机 2
+  OPENARM_TELEOP_PORT=4443                     修改服务端口
+  OPENARM_PICO_LINK=network|usb                设置默认连接方式
 EOF
 }
 
@@ -131,9 +132,66 @@ if [[ ! "$num_episodes_value" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
+discover_ordinary_cameras() {
+  local camera_path
+  local resolved
+  local video_node
+  local vendor
+  local product
+
+  for camera_path in \
+    /dev/v4l/by-path/pci-*-usb-*-video-index0; do
+    [[ -L "$camera_path" ]] || continue
+    resolved="$(readlink -f -- "$camera_path")"
+    video_node="${resolved##*/}"
+    vendor="$(
+      cat "/sys/class/video4linux/${video_node}/device/../idVendor" \
+        2>/dev/null || true
+    )"
+    product="$(
+      cat "/sys/class/video4linux/${video_node}/device/../idProduct" \
+        2>/dev/null || true
+    )"
+    if [[ "$vendor:$product" == "0c45:636b" ]]; then
+      printf '%s\n' "$camera_path"
+    fi
+  done
+}
+
+mapfile -t detected_scene_cameras < <(
+  discover_ordinary_cameras | sort -u
+)
+if [[ -z "$scene_camera" && ${#detected_scene_cameras[@]} -gt 0 ]]; then
+  scene_camera="${detected_scene_cameras[0]}"
+fi
+if [[ -z "$scene_camera_secondary" ]]; then
+  for candidate in "${detected_scene_cameras[@]}"; do
+    if [[ -z "$scene_camera" ]] || \
+      [[ "$(readlink -f -- "$candidate")" != \
+         "$(readlink -f -- "$scene_camera")" ]]; then
+      scene_camera_secondary="$candidate"
+      break
+    fi
+  done
+fi
+
+if [[ -z "$scene_camera" || -z "$scene_camera_secondary" ]]; then
+  echo "未找到两台普通 USB 相机 (USB 0c45:636b)。" >&2
+  echo "可通过 OPENARM_SCENE_CAMERA 和" \
+    "OPENARM_SCENE_CAMERA_SECONDARY 手动指定。" >&2
+  exit 1
+fi
 if [[ ! -e "$scene_camera" ]]; then
-  echo "普通外接相机不存在: $scene_camera" >&2
-  echo "可通过 OPENARM_SCENE_CAMERA=/dev/videoN 指定设备。" >&2
+  echo "普通相机 1 不存在: $scene_camera" >&2
+  exit 1
+fi
+if [[ ! -e "$scene_camera_secondary" ]]; then
+  echo "普通相机 2 不存在: $scene_camera_secondary" >&2
+  exit 1
+fi
+if [[ "$(readlink -f -- "$scene_camera")" == \
+      "$(readlink -f -- "$scene_camera_secondary")" ]]; then
+  echo "两路普通相机不能指向同一个 V4L2 设备。" >&2
   exit 1
 fi
 if ! lsusb | grep -q '3251:1930'; then
@@ -268,6 +326,7 @@ export QT_QPA_FONTDIR="/usr/share/fonts/truetype/dejavu"
 record_args=(
   --record-cameras
   --scene-camera-device "$scene_camera"
+  --scene-camera-secondary-device "$scene_camera_secondary"
   --host "$teleop_host"
   --port "$teleop_port"
 )
@@ -275,7 +334,10 @@ if (( ! has_dataset_fps )); then
   record_args+=(--dataset-fps 15)
 fi
 
-echo "双摄像头已就绪，开始 OpenArm 数据采集。"
+echo "三台物理相机已就绪，开始 OpenArm 数据采集。"
+echo "普通相机 1: ${scene_camera}"
+echo "普通相机 2: ${scene_camera_secondary}"
+echo "Aurora930: RGB + Depth"
 dataset_dir="${dataset_root_display%/}/${dataset_repo_id_display//\//_}"
 echo "数据集目录: ${dataset_dir}"
 echo "本次目标: ${num_episodes_value} 个 episode"
