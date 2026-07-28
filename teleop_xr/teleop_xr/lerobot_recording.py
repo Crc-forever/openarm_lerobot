@@ -13,6 +13,9 @@ from typing import Any
 
 
 _STOP_WRITER = object()
+_IMAGE_WRITER_DRAIN_TIMEOUT_S = 15.0
+_MAX_CORRUPT_FRAME_RATIO = 0.05
+_DEPTH_IMAGE_WRITE_LOCK = threading.Lock()
 
 
 class _SaveEpisode:
@@ -83,6 +86,74 @@ def _make_rgb_gpu_encoder() -> Any:
     )
 
 
+def _serialize_depth_image_writes() -> None:
+    """Prevent concurrent Pillow TIFF writes from leaving truncated files."""
+    import lerobot.datasets.image_writer as image_writer
+
+    if getattr(image_writer.write_image, "_openarm_depth_safe", False):
+        return
+
+    original_write_image = image_writer.write_image
+
+    def write_image_depth_safe(
+        image: Any,
+        fpath: Path,
+        compress_level: int = 1,
+    ) -> None:
+        if Path(fpath).suffix.lower() in (".tif", ".tiff"):
+            with _DEPTH_IMAGE_WRITE_LOCK:
+                original_write_image(image, fpath, compress_level)
+            return
+        original_write_image(image, fpath, compress_level)
+
+    write_image_depth_safe._openarm_depth_safe = True  # type: ignore[attr-defined]
+    image_writer.write_image = write_image_depth_safe
+
+
+def _wait_image_writer_bounded(dataset: Any) -> bool:
+    """Wait for image writes, detaching a stuck thread pool after a timeout.
+
+    Returns whether the old image writer was detached and must be replaced.
+    """
+    image_writer = dataset.writer.image_writer
+    if image_writer is None:
+        return False
+
+    pending_queue = image_writer.queue
+    if not isinstance(pending_queue, queue.Queue):
+        dataset.writer._wait_image_writer()
+        return False
+
+    deadline = time.monotonic() + _IMAGE_WRITER_DRAIN_TIMEOUT_S
+    while time.monotonic() < deadline:
+        with pending_queue.all_tasks_done:
+            if pending_queue.unfinished_tasks == 0:
+                return False
+        time.sleep(0.05)
+
+    with pending_queue.all_tasks_done:
+        unfinished = int(pending_queue.unfinished_tasks)
+    logging.getLogger(__name__).error(
+        "Image writer did not drain within %.1fs (%d unfinished task(s)); "
+        "detaching it and dropping incomplete synchronized frames",
+        _IMAGE_WRITER_DRAIN_TIMEOUT_S,
+        unfinished,
+    )
+
+    # Remove tasks which have not started. A task already inside a wedged
+    # Pillow call cannot be cancelled, so the daemon thread is detached. Its
+    # partial path is removed by _drop_corrupt_pending_frames().
+    while True:
+        try:
+            pending_queue.get_nowait()
+        except queue.Empty:
+            break
+        else:
+            pending_queue.task_done()
+    dataset.writer.image_writer = None
+    return True
+
+
 def _quarantine_interrupted_images(
     dataset_root: Path,
     episode_index: int,
@@ -107,29 +178,62 @@ def _quarantine_interrupted_images(
     return quarantine_root
 
 
-def _drop_corrupt_pending_frames(dataset: Any) -> int:
-    """Remove unreadable camera frames from every synchronized feature."""
+def _drop_corrupt_pending_frames(dataset: Any) -> tuple[int, bool, bool]:
+    """Drop bad synchronized frames, or discard an overly damaged episode.
+
+    Returns ``(removed_frames, restart_image_writer, discarded_episode)``.
+    """
     from PIL import Image
 
     writer = dataset.writer
-    writer._wait_image_writer()
+    restart_image_writer = _wait_image_writer_bounded(dataset)
     episode_buffer = writer.episode_buffer
     episode_size = int(episode_buffer["size"])
     if episode_size == 0:
-        return 0
+        return 0, restart_image_writer, False
 
     bad_indices: set[int] = set()
     for video_key in dataset.meta.video_keys:
         image_paths = episode_buffer[video_key]
         for index, image_path in enumerate(image_paths):
             try:
-                with Image.open(image_path) as image:
+                path = Path(image_path)
+                if not path.is_file() or path.stat().st_size <= 0:
+                    raise OSError("image file is missing or empty")
+                feature = dataset.meta.features[video_key]
+                is_depth = bool(
+                    feature.get("info", {}).get("is_depth_map", False)
+                )
+                if is_depth:
+                    height, width = map(int, feature["shape"][:2])
+                    # OpenArm depth snapshots are float32 TIFFs. The raw pixel
+                    # payload alone must therefore contain H*W*4 bytes.
+                    minimum_size = height * width * 4
+                    if path.stat().st_size < minimum_size:
+                        raise OSError(
+                            f"truncated depth TIFF: {path.stat().st_size} "
+                            f"< {minimum_size} bytes"
+                        )
+                with Image.open(path) as image:
                     image.load()
             except (OSError, ValueError):
                 bad_indices.add(index)
 
     if not bad_indices:
-        return 0
+        return 0, restart_image_writer, False
+
+    corrupt_ratio = len(bad_indices) / episode_size
+    if corrupt_ratio > _MAX_CORRUPT_FRAME_RATIO:
+        logging.getLogger(__name__).warning(
+            "Discarding episode because %d/%d synchronized frame(s) are "
+            "corrupt (%.1f%% > %.1f%%)",
+            len(bad_indices),
+            episode_size,
+            corrupt_ratio * 100.0,
+            _MAX_CORRUPT_FRAME_RATIO * 100.0,
+        )
+        writer.clear_episode_buffer()
+        return episode_size, restart_image_writer, True
 
     paths_to_remove = {
         Path(episode_buffer[key][index])
@@ -139,24 +243,39 @@ def _drop_corrupt_pending_frames(dataset: Any) -> int:
     keep_indices = [
         index for index in range(episode_size) if index not in bad_indices
     ]
+    for path in paths_to_remove:
+        path.unlink(missing_ok=True)
+
     for key, values in episode_buffer.items():
         if isinstance(values, list) and len(values) == episode_size:
             episode_buffer[key] = [values[index] for index in keep_indices]
+
+    # LeRobot's video encoder consumes frame-%06d files as a contiguous
+    # sequence. Close filename gaps created by removing synchronized frames.
+    for video_key in dataset.meta.video_keys:
+        renumbered_paths: list[str] = []
+        for new_index, image_path in enumerate(episode_buffer[video_key]):
+            source = Path(image_path)
+            destination = source.with_name(
+                f"frame-{new_index:06d}{source.suffix}"
+            )
+            if source != destination:
+                source.replace(destination)
+            renumbered_paths.append(str(destination))
+        episode_buffer[video_key] = renumbered_paths
 
     episode_buffer["size"] = len(keep_indices)
     episode_buffer["frame_index"] = list(range(len(keep_indices)))
     episode_buffer["timestamp"] = [
         index / dataset.meta.fps for index in range(len(keep_indices))
     ]
-    for path in paths_to_remove:
-        path.unlink(missing_ok=True)
 
     logging.getLogger(__name__).warning(
         "Dropped %d corrupt synchronized frame(s) before encoding: %s",
         len(bad_indices),
         sorted(bad_indices),
     )
-    return len(bad_indices)
+    return len(bad_indices), restart_image_writer, False
 
 
 class LeRobotEpisodeRecorder:
@@ -183,6 +302,7 @@ class LeRobotEpisodeRecorder:
             hw_to_dataset_features,
         )
 
+        _serialize_depth_image_writes()
         self.robot = robot
         self.camera_source = camera_source
         self.task = task
@@ -516,16 +636,34 @@ class LeRobotEpisodeRecorder:
                 if isinstance(item, _SaveEpisode):
                     try:
                         if self.dataset.has_pending_frames():
-                            dropped = _drop_corrupt_pending_frames(self.dataset)
+                            (
+                                dropped,
+                                restart_image_writer,
+                                discarded_episode,
+                            ) = (
+                                _drop_corrupt_pending_frames(self.dataset)
+                            )
                             self.current_episode_frames -= dropped
-                            if not self.dataset.has_pending_frames():
+                            if (
+                                discarded_episode
+                                or not self.dataset.has_pending_frames()
+                            ):
                                 item.episode_count = (
                                     self.dataset.meta.total_episodes
                                 )
+                                self.current_episode_frames = 0
+                                if restart_image_writer:
+                                    self.dataset.writer.start_image_writer(
+                                        num_threads=2
+                                    )
                                 continue
                             self.dataset.save_episode()
                             item.saved = True
                             self.current_episode_frames = 0
+                            if restart_image_writer:
+                                self.dataset.writer.start_image_writer(
+                                    num_threads=2
+                                )
                         item.episode_count = self.dataset.meta.total_episodes
                     except BaseException as exc:
                         item.error = exc

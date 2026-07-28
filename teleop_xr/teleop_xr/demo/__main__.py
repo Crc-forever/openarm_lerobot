@@ -1273,10 +1273,12 @@ def main():
                     state_container["recording_status"] = "waiting"
                     if not saved:
                         logger.info(
-                            "Current episode had no frames; waiting for A"
+                            "Current episode was not saved: no valid frames "
+                            "or too many corrupt frames; waiting for A"
                         )
                         announce_recording_status(
-                            "No valid data. Episode was not saved."
+                            "Episode was not saved. No valid data or too "
+                            "many damaged frames."
                         )
                         return
                     logger.info(
