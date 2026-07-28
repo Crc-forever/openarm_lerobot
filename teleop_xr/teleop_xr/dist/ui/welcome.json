@@ -1,0 +1,135 @@
+{
+  "element": {
+    "sourceTag": "panel",
+    "type": "custom",
+    "children": [
+      {
+        "sourceTag": "text",
+        "type": "custom",
+        "children": [
+          "Hello, Immersive Web!"
+        ],
+        "properties": {},
+        "dataUid": "uid-2"
+      },
+      {
+        "sourceTag": "text",
+        "type": "custom",
+        "children": [
+          "Explore locomotion, grab interactions, spatial UI panel and more - start building for the immersive web with Immersive Web SDK today."
+        ],
+        "properties": {},
+        "dataUid": "uid-3"
+      },
+      {
+        "sourceTag": "button",
+        "type": "custom",
+        "children": [
+          {
+            "sourceTag": "buttonicon",
+            "type": "custom",
+            "children": [
+              {
+                "sourceTag": "loginicon",
+                "type": "custom",
+                "children": [],
+                "properties": {},
+                "dataUid": "uid-6"
+              }
+            ],
+            "properties": {},
+            "dataUid": "uid-5"
+          },
+          {
+            "sourceTag": "text",
+            "type": "custom",
+            "children": [
+              "Enter XR"
+            ],
+            "properties": {},
+            "dataUid": "uid-7"
+          }
+        ],
+        "properties": {
+          "id": "xr-button"
+        },
+        "dataUid": "uid-4"
+      }
+    ],
+    "properties": {},
+    "dataUid": "uid-1"
+  },
+  "classes": {},
+  "ranges": {
+    "uid-1": {
+      "start": {
+        "line": 0,
+        "column": 0
+      },
+      "end": {
+        "line": 9,
+        "column": 8
+      }
+    },
+    "uid-2": {
+      "start": {
+        "line": 1,
+        "column": 2
+      },
+      "end": {
+        "line": 1,
+        "column": 36
+      }
+    },
+    "uid-3": {
+      "start": {
+        "line": 2,
+        "column": 2
+      },
+      "end": {
+        "line": 2,
+        "column": 148
+      }
+    },
+    "uid-4": {
+      "start": {
+        "line": 3,
+        "column": 2
+      },
+      "end": {
+        "line": 8,
+        "column": 11
+      }
+    },
+    "uid-5": {
+      "start": {
+        "line": 4,
+        "column": 4
+      },
+      "end": {
+        "line": 6,
+        "column": 17
+      }
+    },
+    "uid-6": {
+      "start": {
+        "line": 5,
+        "column": 6
+      },
+      "end": {
+        "line": 6,
+        "column": 4
+      }
+    },
+    "uid-7": {
+      "start": {
+        "line": 7,
+        "column": 4
+      },
+      "end": {
+        "line": 7,
+        "column": 25
+      }
+    }
+  }
+}
