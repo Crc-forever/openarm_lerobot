@@ -27,8 +27,8 @@ openarm_description:
   revision: 1ce68f874e87f90af92db3b469cd7b7012fb15e2
   release: 1.0.4
   local_path: openarm_description
-  bimanual_xacro: urdf/robot/v10.urdf.xacro
+  bimanual_xacro: assets/robot/openarm_v1.0/urdf/openarm_v10.urdf.xacro
   xacro_arguments:
     bimanual: "true"
-    hand: "true"
+    ee_type: parallel_link
     ros2_control: "false"

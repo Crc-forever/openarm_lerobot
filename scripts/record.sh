@@ -289,7 +289,7 @@ driver_log="${project_dir}/logs/aurora930-recording.log"
 ros2 launch deptrum-ros-driver-aurora930 aurora930_launch.py \
   ir_enable:=false \
   point_cloud_enable:=false \
-  rgbd_enable:=false \
+  rgbd_enable:=true \
   align_mode:=true \
   depth_correction:=true \
   resolution_mode_index:=1 \

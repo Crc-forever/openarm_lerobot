@@ -2,7 +2,7 @@ import importlib
 import importlib.metadata
 from typing import cast
 from teleop_xr.ik.robot import BaseRobot
-from teleop_xr.ik.robots.h1_2 import UnitreeH1Robot
+from teleop_xr.ik.robots.openarm import OpenArmRobot
 
 
 class RobotLoadError(Exception):
@@ -19,7 +19,7 @@ def _require_robot_subclass(cls: object, source: str) -> type[BaseRobot]:
 
 def _resolve_robot_target(robot_spec: str | None) -> tuple[str, str]:
     if robot_spec is None:
-        return UnitreeH1Robot.__module__, UnitreeH1Robot.__name__
+        return OpenArmRobot.__module__, OpenArmRobot.__name__
 
     if ":" in robot_spec:
         module_name, class_name = robot_spec.split(":", 1)
@@ -54,7 +54,7 @@ def load_robot_class(robot_spec: str | None = None) -> type[BaseRobot]:
     Load a robot class based on the given specification.
 
     Precedence:
-    1. If robot_spec is None, return UnitreeH1Robot.
+    1. If robot_spec is None, return OpenArmRobot.
     2. If robot_spec matches an entry point name in 'teleop_xr.robots', load that.
     3. If robot_spec contains ':', parse as 'module:ClassName'.
     4. Otherwise, raise RobotLoadError.

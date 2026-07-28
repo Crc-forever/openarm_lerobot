@@ -82,7 +82,7 @@ class DemoCLI(CommonCLI):
 
     # Robot Loader args
     robot_class: Optional[str] = None
-    """Robot class to load (e.g., 'teleop_xr.ik.robots.h1_2:UnitreeH1Robot' or entry point name)."""
+    """Robot class to load; this project provides the openarm entry point."""
     robot_args: str = "{}"
     """JSON string of arguments to pass to the robot constructor."""
     list_robots: bool = False
@@ -1213,6 +1213,7 @@ def main():
                     try:
                         operation()
                     except Exception as exc:
+                        state_container["recording_status"] = "error"
                         logger.error(f"{operation_name} failed: {exc}")
                         announce_recording_status(
                             "Recording operation failed. Check the computer."
@@ -1261,6 +1262,11 @@ def main():
                     return
 
                 def _finish() -> None:
+                    state_container["recording_status"] = "saving"
+                    logger.info("X pressed: saving the current episode")
+                    announce_recording_status(
+                        "Saving episode. Please wait."
+                    )
                     saved, session_count, dataset_count = (
                         action_output.finish_recording_episode()
                     )

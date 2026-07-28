@@ -1,105 +1,69 @@
-# OpenArm
+# OpenArm LeRobot
 
-双臂 OpenArm 的 Pico VR 遥操作、LeRobot 数据采集和训练工程。
+Pico VR 控制双臂 OpenArm，并用 LeRobot 同步采集双臂、夹爪和四路相机数据。
 
-项目后续工作统一记录在：[TODO.md](TODO.md)。
+## 系统环境
 
-## 架构
+- Ubuntu 24.04 x86_64；
+- NVIDIA 显卡及可用驱动；
+- 两路 SocketCAN：左臂 `can0`，右臂 `can1`；
+- Python 3.12。
 
-```text
-Pico
-  -> TeleopXR
-  -> OpenArm 双臂 IK（PyRoki）
-  -> LeRobot
-  -> can0 / can1
-  -> 左右机械臂
+新机 clone 后先安装系统依赖：
+
+```bash
+sudo apt update
+sudo apt install -y \
+  python3 python3-venv git curl openssl adb android-sdk-platform-tools-common \
+  can-utils ffmpeg libgl1 libglib2.0-0
 ```
 
-项目只使用一个 Python 环境。TeleopXR、PyRoki 和 OpenArm 模型源码随
-项目保存；LeRobot 使用固定版本安装。
-
-## 目录
-
-```text
-Openarm_lerobot/
-├── teleop_xr/           # Pico 接收、手柄映射和双臂 IK 源码
-├── pyroki/              # IK 求解器源码
-├── openarm_description/ # OpenArm URDF、Xacro 和网格
-├── configs/             # 硬件和遥操作配置
-└── scripts/             # 安装和启动入口
-```
-
-## 安装
-
-在新电脑上执行一次：
+然后在仓库根目录执行：
 
 ```bash
 ./scripts/install.sh
 ```
 
-脚本创建名为 `lerobot` 的唯一 Conda 环境，安装固定版本的 LeRobot，
-并从本项目目录安装 TeleopXR。源码修改后不需要重新复制。
+脚本会创建仓库内的 `.venv`，安装固定版本的 LeRobot、JAX、PyRoki 和
+TeleopXR，并为本机生成 HTTPS 证书。以后不需要激活虚拟环境，直接运行
+`scripts/` 中的入口即可。
 
-当前默认不安装 PyRoki/JAX。需要启用 IK 时执行：
+已有机器如果保留了原来的 Conda `lerobot` 环境，启动脚本会自动兼容：
+优先使用 `.venv`，不存在时使用 Conda 环境。
 
-```bash
-./scripts/install.sh --with-ik
+## 操作文档
+
+1. [Pico USB 遥操作（含投屏）](docs/Pico_USB遥操作.md)
+2. [Pico 局域网遥操作](docs/Pico_局域网遥操作.md)
+3. [数据采集](docs/数据采集.md)
+
+## 目录
+
+```text
+configs/             硬件、遥操作与安全参数
+docs/                三份操作说明
+openarm_description/ OpenArm v1 双臂模型
+pyroki/              IK 求解器
+scripts/             安装、遥操作和采集入口
+teleop_xr/           Pico WebXR、OpenArm IK、控制与记录
 ```
 
-该选项安装带 CUDA 12 运行库的 JAX 0.6.2，以 NVIDIA GPU 加速 IK。
-CUDA 运行库由 Python wheel 管理，不要求单独安装系统 CUDA Toolkit，也不
-修改显卡驱动。
+`data/`、`logs/`、`.venv/` 和 `.vendor/` 均不会提交到 Git。
 
-## 启动
+## 数据采集额外环境
 
-Pico 连接方法：
+遥操作不需要 ROS。只有四相机数据采集需要 ROS 2 Jazzy 和 Aurora930
+厂商驱动。先从相机随附资料取得：
 
-- [Pico USB 有线连接说明](docs/PICO有线连接说明.md)（优先）；
-- [Pico USB 本机投屏](docs/PICO本机投屏说明.md)；
-- [Pico Wi-Fi 连接说明](docs/PICO连接说明.md)。
-- [OpenArm 真机 VR 操作步骤](docs/操作步骤.md)。
-
-数据采集方法见：[LeRobot 数据采集说明](docs/数据采集说明.md)。
-
-只启动 Pico/TeleopXR：
-
-```bash
-./scripts/start.sh teleop
+```text
+deptrum-ros-driver-aurora930-x86_64-0.2.10-source.tar.gz
 ```
 
-IK 环境准备好以后：
+然后执行：
 
 ```bash
-./scripts/start.sh ik
+./scripts/install_aurora930.sh /path/to/deptrum-ros-driver-aurora930-x86_64-0.2.10-source.tar.gz
 ```
 
-此命令运行完整的 `Pico -> IK -> LeRobot action` 离线链路，不访问 CAN。
-
-真机入口为：
-
-```bash
-./scripts/start.sh robot
-```
-
-`robot` 会连接 `can0/can1` 并使能电机。当前阶段不要执行；应先完成低速、
-急停和方向核对。
-
-只读检查左右臂电机反馈，不使能电机、不发送动作：
-
-```bash
-conda run --no-capture-output -n lerobot python scripts/check_feedback.py
-```
-
-## 当前状态
-
-- TeleopXR源码、PyRoki源码和OpenArm模型已经迁入新项目；
-- TeleopXR基础服务可以独立启动；
-- CPU版IK依赖已经安装；
-- IK输出已转换为LeRobot双臂OpenArm标准action；
-- 离线完整链路已经启动验证；
-- LeRobot数据采集已接入VR动作、真实电机反馈和最终下发action；
-- 普通外接RGB相机与Aurora930彩色/深度流已接入，并提供本机实时预览；
-- `teleop`和`ik`不会访问CAN或使能电机；
-- 只有显式执行`start.sh robot`才会连接真机。
-
-旧工程 `../openarm_ws/` 保留不动，仅用于核对已经验证的映射、滤波和硬件参数。
+脚本会安装 ROS 2 Jazzy、编译驱动并配置 Aurora930 udev 权限。厂商驱动包
+不是公开 Git 依赖，且超过 GitHub 单文件限制，因此不放入仓库。

@@ -38,7 +38,6 @@ trap cleanup EXIT INT TERM
 
 echo "USB 通道已建立。"
 echo "服务器启动后，在 Pico 浏览器打开：https://localhost:$PORT"
-echo "这是离线 IK 模式，不会连接 can0/can1。"
+echo "即将连接 can0/can1 并启动真机遥操作。"
 
-"$PROJECT_DIR/scripts/start.sh" ik --host 127.0.0.1 --port "$PORT" "$@"
-
+"$PROJECT_DIR/scripts/start.sh" robot --host 127.0.0.1 --port "$PORT" "$@"

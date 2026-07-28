@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import json
 import queue
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -39,6 +40,123 @@ def _normalize_feature_schema(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_normalize_feature_schema(item) for item in value]
     return value
+
+
+def _feature_schema_contains(stored: Any, expected: Any) -> bool:
+    """Return whether stored schema contains every current required value.
+
+    LeRobot enriches video feature ``info`` after dataset creation with codec,
+    pixel format, encoder, and FPS metadata. Those stored-only values must not
+    make an otherwise identical dataset impossible to resume.
+    """
+    stored = _normalize_feature_schema(stored)
+    expected = _normalize_feature_schema(expected)
+    if isinstance(expected, dict):
+        return isinstance(stored, dict) and all(
+            key in stored and _feature_schema_contains(stored[key], value)
+            for key, value in expected.items()
+        )
+    return stored == expected
+
+
+def _make_rgb_gpu_encoder() -> Any:
+    """Build the AV1 NVENC encoder used for RGB recording streams.
+
+    PyAV bundled with LeRobot 0.6.0 supports AV1 NVENC, but that LeRobot
+    release accidentally omits it from its validation allow-list.
+    """
+    import lerobot.configs.video as video_config
+    from lerobot.configs import RGBEncoderConfig
+
+    video_config.VALID_VIDEO_CODECS |= {"av1_nvenc"}
+    return RGBEncoderConfig(
+        vcodec="av1_nvenc",
+        pix_fmt="yuv420p",
+        g=2,
+        crf=None,
+        preset=None,
+        extra_options={
+            "rc": 0,
+            "cq": 30,
+            "bf": 0,
+        },
+    )
+
+
+def _quarantine_interrupted_images(
+    dataset_root: Path,
+    episode_index: int,
+) -> Path | None:
+    """Move uncommitted images aside so a restarted recording cannot mix them."""
+    images_root = dataset_root / "images"
+    interrupted_dirs = sorted(
+        images_root.glob(f"*/episode-{episode_index:06d}")
+    )
+    if not interrupted_dirs:
+        return None
+
+    quarantine_root = (
+        dataset_root
+        / "interrupted"
+        / f"episode-{episode_index:06d}-{time.strftime('%Y%m%d-%H%M%S')}"
+    )
+    for source in interrupted_dirs:
+        destination = quarantine_root / source.relative_to(images_root)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(destination))
+    return quarantine_root
+
+
+def _drop_corrupt_pending_frames(dataset: Any) -> int:
+    """Remove unreadable camera frames from every synchronized feature."""
+    from PIL import Image
+
+    writer = dataset.writer
+    writer._wait_image_writer()
+    episode_buffer = writer.episode_buffer
+    episode_size = int(episode_buffer["size"])
+    if episode_size == 0:
+        return 0
+
+    bad_indices: set[int] = set()
+    for video_key in dataset.meta.video_keys:
+        image_paths = episode_buffer[video_key]
+        for index, image_path in enumerate(image_paths):
+            try:
+                with Image.open(image_path) as image:
+                    image.load()
+            except (OSError, ValueError):
+                bad_indices.add(index)
+
+    if not bad_indices:
+        return 0
+
+    paths_to_remove = {
+        Path(episode_buffer[key][index])
+        for key in dataset.meta.video_keys
+        for index in bad_indices
+    }
+    keep_indices = [
+        index for index in range(episode_size) if index not in bad_indices
+    ]
+    for key, values in episode_buffer.items():
+        if isinstance(values, list) and len(values) == episode_size:
+            episode_buffer[key] = [values[index] for index in keep_indices]
+
+    episode_buffer["size"] = len(keep_indices)
+    episode_buffer["frame_index"] = list(range(len(keep_indices)))
+    episode_buffer["timestamp"] = [
+        index / dataset.meta.fps for index in range(len(keep_indices))
+    ]
+    for path in paths_to_remove:
+        path.unlink(missing_ok=True)
+
+    logging.getLogger(__name__).warning(
+        "Dropped %d corrupt synchronized frame(s) before encoding: %s",
+        len(bad_indices),
+        sorted(bad_indices),
+    )
+    return len(bad_indices)
 
 
 class LeRobotEpisodeRecorder:
@@ -114,6 +232,7 @@ class LeRobotEpisodeRecorder:
             if has_depth
             else None
         )
+        rgb_encoder = _make_rgb_gpu_encoder() if has_cameras else None
         info_path = self.root / "meta" / "info.json"
         resume_existing = info_path.is_file()
         if resume_existing:
@@ -150,12 +269,22 @@ class LeRobotEpisodeRecorder:
                         "refusing online fallback. Missing: "
                         + ", ".join(missing_metadata)
                     )
+                quarantine = _quarantine_interrupted_images(
+                    self.root,
+                    total_episodes,
+                )
+                if quarantine is not None:
+                    logging.getLogger(__name__).warning(
+                        "Moved interrupted, uncommitted episode images aside: %s",
+                        quarantine,
+                    )
 
         if resume_existing:
             self.dataset = LeRobotDataset.resume(
                 repo_id=repo_id,
                 root=self.root,
                 image_writer_threads=2 if has_cameras else 0,
+                rgb_encoder=rgb_encoder,
                 depth_encoder=depth_encoder,
             )
             if self.dataset.meta.fps != fps:
@@ -163,16 +292,31 @@ class LeRobotEpisodeRecorder:
                     f"Existing dataset FPS is {self.dataset.meta.fps}, "
                     f"requested {fps}: {self.root}"
                 )
-            stored_features = {
-                key: self.dataset.meta.features.get(key)
-                for key in features
+            expected_feature_keys = set(features)
+            stored_feature_keys = {
+                key
+                for key in self.dataset.meta.features
+                if key == ACTION or key.startswith(f"{OBS_STR}.")
             }
-            if _normalize_feature_schema(stored_features) != (
-                _normalize_feature_schema(features)
+            different_features = sorted(
+                key
+                for key, expected in features.items()
+                if not _feature_schema_contains(
+                    self.dataset.meta.features.get(key),
+                    expected,
+                )
+            )
+            if (
+                stored_feature_keys != expected_feature_keys
+                or different_features
             ):
+                missing = sorted(expected_feature_keys - stored_feature_keys)
+                extra = sorted(stored_feature_keys - expected_feature_keys)
                 raise ValueError(
                     "Existing dataset features do not match the current "
-                    f"robot/camera configuration: {self.root}"
+                    f"robot/camera configuration: {self.root}; "
+                    f"missing={missing}, extra={extra}, "
+                    f"different={different_features}"
                 )
             logging.getLogger(__name__).info(
                 "Resuming dataset with %d episodes: %s",
@@ -188,11 +332,16 @@ class LeRobotEpisodeRecorder:
                 features=features,
                 use_videos=has_cameras,
                 image_writer_threads=2 if has_cameras else 0,
+                rgb_encoder=rgb_encoder,
                 depth_encoder=depth_encoder,
             )
         if camera_source is not None:
             camera_source.write_metadata(
                 self.root / "meta" / "openarm_cameras.json"
+            )
+        if rgb_encoder is not None:
+            logging.getLogger(__name__).info(
+                "RGB dataset encoding: NVIDIA AV1 NVENC"
             )
         logging.getLogger(__name__).info("Dataset session: %s", self.root)
         self._writer = threading.Thread(
@@ -281,7 +430,7 @@ class LeRobotEpisodeRecorder:
         self.current_episode_frames += 1
 
     def finish_episode(
-        self, timeout_s: float = 300.0
+        self, timeout_s: float = 1800.0
     ) -> tuple[bool, int, int]:
         """Save the current episode and return to waiting state."""
         with self._state_lock:
@@ -367,6 +516,13 @@ class LeRobotEpisodeRecorder:
                 if isinstance(item, _SaveEpisode):
                     try:
                         if self.dataset.has_pending_frames():
+                            dropped = _drop_corrupt_pending_frames(self.dataset)
+                            self.current_episode_frames -= dropped
+                            if not self.dataset.has_pending_frames():
+                                item.episode_count = (
+                                    self.dataset.meta.total_episodes
+                                )
+                                continue
                             self.dataset.save_episode()
                             item.saved = True
                             self.current_episode_frames = 0

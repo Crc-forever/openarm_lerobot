@@ -572,17 +572,17 @@ class LeRobotOpenArmOutput:
                 )
             except (OSError, subprocess.SubprocessError) as exc:
                 raise RuntimeError(
-                    f"Cannot inspect {port}; run scripts/setup_can.sh first"
+                    f"Cannot inspect {port}; configure SocketCAN first"
                 ) from exc
             output = result.stdout
             if "state UP" not in output:
                 raise RuntimeError(
-                    f"{port} is not UP; run scripts/setup_can.sh first"
+                    f"{port} is not UP; configure SocketCAN first"
                 )
             if re.search(r"\bstate\s+ERROR-ACTIVE\b", output) is None:
                 raise RuntimeError(
                     f"{port} is not CAN ERROR-ACTIVE; do not enable motors. "
-                    "Run scripts/setup_can.sh, then inspect the wiring and power"
+                    "Reconfigure SocketCAN, then inspect the wiring and power"
                 )
             if re.search(r"\bbitrate\s+1000000\b", output) is None:
                 raise RuntimeError(
@@ -607,7 +607,7 @@ class LeRobotOpenArmOutput:
                 logging.getLogger(__name__).warning(
                     "%s does not provide automatic BUS-OFF recovery "
                     "(restart-ms=%d). A BUS-OFF fault will stop control; "
-                    "physically cut motor power and run scripts/setup_can.sh "
+                    "physically cut motor power and reconfigure SocketCAN "
                     "before restarting.",
                     port,
                     restart_ms,

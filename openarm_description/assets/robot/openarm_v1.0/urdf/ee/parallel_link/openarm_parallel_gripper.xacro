@@ -33,7 +33,7 @@ limitations under the License.
       <visual name="${ee_prefix}left_finger_visual">
         <xacro:openarm-ee-kinematics-link config="${ee_kinematics_link}" name="left_finger" />
         <geometry>
-          <mesh filename="package://${description_pkg}/assets/end_effector/parallel_link/meshes/visual/finger.dae" scale="0.001 0.001 0.001"/>
+          <mesh filename="package://${description_pkg}/assets/end_effector/parallel_link/meshes/visual/finger.glb" scale="0.001 0.001 0.001"/>
         </geometry>
       </visual>
       <collision name="${ee_prefix}left_finger_collision">
@@ -49,7 +49,7 @@ limitations under the License.
       <visual name="${ee_prefix}right_finger_visual">
         <xacro:openarm-ee-kinematics-link config="${ee_kinematics_link}" name="right_finger" />
         <geometry>
-          <mesh filename="package://${description_pkg}/assets/end_effector/parallel_link/meshes/visual/finger.dae" scale="0.001 -0.001 0.001"/>
+          <mesh filename="package://${description_pkg}/assets/end_effector/parallel_link/meshes/visual/finger.glb" scale="0.001 -0.001 0.001"/>
         </geometry>
       </visual>
       <collision name="${ee_prefix}right_finger_collision">

@@ -26,8 +26,6 @@ htmlcov/
 !.env.example
 *.key
 *.pem
-!teleop_xr/teleop_xr/key.pem
-!teleop_xr/teleop_xr/cert.pem
 
 # Runtime artifacts
 logs/

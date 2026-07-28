@@ -37,7 +37,7 @@ limitations under the License.
   <xacro:arg name="left_arm_base_rpy" default="-1.5708 0 0" />
   <xacro:arg name="can_fd" default="true" />
   <xacro:if value="${'$(arg arm_type)' != 'v10'}">
-    ${xacro.error('assets/robot/openarm_v1.0 only supports arm_type:=v10. Use assets/robot/openarm_v2.0 for newer hardware variants.')}
+    ${xacro.error('This project only supports the OpenArm v1.0 arm_type:=v10 model.')}
   </xacro:if>
   <xacro:if value="${'$(arg body_type)' != 'v10'}">
     ${xacro.error('assets/robot/openarm_v1.0 only supports body_type:=v10.')}
