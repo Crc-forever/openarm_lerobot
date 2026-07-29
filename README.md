@@ -4,7 +4,8 @@ Pico VR 控制双臂 OpenArm，并用 LeRobot 同步采集双臂、夹爪和四�
 
 ## 系统环境
 
-- Ubuntu 24.04 x86_64；
+- 推荐 Ubuntu 22.04 x86_64 + ROS 2 Humble（Aurora930 配套组合）；
+- 同时兼容 Ubuntu 24.04 x86_64 + ROS 2 Jazzy；
 - NVIDIA 显卡及可用驱动；
 - 两路 SocketCAN：左臂 `can0`，右臂 `can1`；
 - Python 3.12。
@@ -31,6 +32,12 @@ TeleopXR，并为本机生成 HTTPS 证书。以后不需要激活虚拟环境�
 已有机器如果保留了原来的 Conda `lerobot` 环境，启动脚本会自动兼容：
 优先使用 `.venv`，不存在时使用 Conda 环境。
 
+部署后可先做软件侧预检：
+
+```bash
+./scripts/preflight.sh --software-only
+```
+
 ## 操作文档
 
 1. [Pico USB 遥操作（含投屏）](docs/Pico_USB遥操作.md)
@@ -52,8 +59,8 @@ teleop_xr/           Pico WebXR、OpenArm IK、控制与记录
 
 ## 数据采集额外环境
 
-遥操作不需要 ROS。只有四相机数据采集需要 ROS 2 Jazzy 和 Aurora930
-厂商驱动。先从相机随附资料取得：
+遥操作不需要 ROS。只有四相机数据采集需要 ROS 2 和 Aurora930 厂商驱动：
+Ubuntu 22.04 使用 Humble，Ubuntu 24.04 使用 Jazzy。先从相机随附资料取得：
 
 ```text
 deptrum-ros-driver-aurora930-x86_64-0.2.10-source.tar.gz
@@ -65,5 +72,14 @@ deptrum-ros-driver-aurora930-x86_64-0.2.10-source.tar.gz
 ./scripts/install_aurora930.sh /path/to/deptrum-ros-driver-aurora930-x86_64-0.2.10-source.tar.gz
 ```
 
-脚本会安装 ROS 2 Jazzy、编译驱动并配置 Aurora930 udev 权限。厂商驱动包
-不是公开 Git 依赖，且超过 GitHub 单文件限制，因此不放入仓库。
+脚本会按 Ubuntu 版本选择 ROS 2、编译驱动并配置 Aurora930 udev 权限。
+在 22.04 上，相机订阅会通过系统 Python 3.10 桥接到 LeRobot 的 Python
+3.12 进程，避免 Humble `rclpy` 的 ABI 冲突。厂商驱动包不是公开 Git
+依赖，且超过 GitHub 单文件限制，因此不放入仓库。
+
+机械臂和相机全部接好后执行：
+
+```bash
+./scripts/setup_can.sh
+./scripts/preflight.sh
+```

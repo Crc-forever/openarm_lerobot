@@ -2,6 +2,7 @@
 set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${project_dir}/scripts/ros_env.sh"
 aurora_ws="${project_dir}/.vendor/aurora930/ws"
 tls_dir="${project_dir}/teleop_xr/teleop_xr"
 scene_camera="${OPENARM_SCENE_CAMERA:-}"
@@ -277,8 +278,10 @@ if ss -H -ltn "sport = :${teleop_port}" | grep -q .; then
   echo "端口 ${teleop_port} 已被占用，请先停止旧的 TeleopXR 进程。" >&2
   exit 1
 fi
-if [[ ! -r /opt/ros/jazzy/setup.bash ]]; then
-  echo "未安装 ROS 2 Jazzy。" >&2
+ros_distro="$(openarm_detect_ros_distro)"
+ros_setup="$(openarm_ros_setup_path "$ros_distro")"
+if [[ ! -r "$ros_setup" ]]; then
+  echo "未安装 ROS 2 ${ros_distro}。" >&2
   exit 1
 fi
 if [[ ! -r "${aurora_ws}/install/setup.bash" ]]; then
@@ -310,9 +313,15 @@ done
 # ROS setup files reference optional variables and are not compatible with
 # nounset. Temporarily relax only that shell option while sourcing them.
 set +u
-source /opt/ros/jazzy/setup.bash
+source "$ros_setup"
 source "${aurora_ws}/install/setup.bash"
 set -u
+
+# Humble on Ubuntu 22.04 is built for Python 3.10, while LeRobot 0.6 runs
+# under Python 3.12. The capture class starts an out-of-process ROS bridge.
+if [[ "$ros_distro" == "humble" ]]; then
+  export OPENARM_ROS_PYTHON="${OPENARM_ROS_PYTHON:-/usr/bin/python3}"
+fi
 
 mkdir -p "${project_dir}/logs"
 driver_log="${project_dir}/logs/aurora930-recording.log"

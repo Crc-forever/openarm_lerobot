@@ -29,6 +29,39 @@ if [[ -z "$PYTHON" || ! -x "$PYTHON" ]]; then
   exit 1
 fi
 
+# A machine-wide CUDA entry in LD_LIBRARY_PATH can take precedence over the
+# CUDA 12 libraries installed by jax[cuda12]. Put the wheel-provided runtime
+# first while retaining ROS and other host library paths for record mode.
+python_cuda_libraries="$(
+  "$PYTHON" - <<'PY'
+from pathlib import Path
+import site
+
+paths = []
+for site_dir in site.getsitepackages():
+    nvidia_dir = Path(site_dir) / "nvidia"
+    if not nvidia_dir.is_dir():
+        continue
+    paths.extend(
+        str(path)
+        for path in sorted(nvidia_dir.glob("*/lib"))
+        if path.is_dir()
+    )
+print(":".join(paths))
+PY
+)"
+if [[ -n "$python_cuda_libraries" ]]; then
+  export LD_LIBRARY_PATH="${python_cuda_libraries}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
+
+# Cache the expensive first IK compilation for later car-computer starts.
+# Avoid JAX's default large GPU reservation so Torch/TorchCodec can encode
+# camera streams on the same 6 GB laptop GPU.
+export JAX_COMPILATION_CACHE_DIR="${OPENARM_JAX_CACHE_DIR:-$PROJECT_DIR/.cache/jax}"
+export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS="${JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS:-1}"
+export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
+mkdir -p "$JAX_COMPILATION_CACHE_DIR"
+
 if [[ "$MODE" == "teleop" ]]; then
   exec "$PYTHON" -m teleop_xr.demo --mode teleop "$@"
 fi

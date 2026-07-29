@@ -5,14 +5,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
+import struct
+import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import cv2
 import numpy as np
-
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +53,7 @@ class RecordingCameraCapture:
             raise ValueError("Camera timeouts must be positive")
 
         self.scene_device = str(Path(scene_device).expanduser())
-        self.scene_secondary_device = str(
-            Path(scene_secondary_device).expanduser()
-        )
+        self.scene_secondary_device = str(Path(scene_secondary_device).expanduser())
         self.aurora_rgb_topic = aurora_rgb_topic
         self.aurora_depth_topic = aurora_depth_topic
         self.aurora_rgb_info_topic = aurora_rgb_info_topic
@@ -74,6 +76,10 @@ class RecordingCameraCapture:
         self._preview_ready = threading.Event()
         self._rclpy: Any | None = None
         self._ros_node: Any | None = None
+        self._ros_bridge_process: subprocess.Popen[bytes] | None = None
+        self._ros_bridge_server: socket.socket | None = None
+        self._ros_bridge_connection: socket.socket | None = None
+        self._ros_bridge_tmp: tempfile.TemporaryDirectory[str] | None = None
 
     @property
     def observation_features(self) -> dict[str, tuple[int, int, int]]:
@@ -114,9 +120,7 @@ class RecordingCameraCapture:
             )
 
         cv2.setNumThreads(1)
-        primary_capture = self._open_scene_camera(
-            self.scene_device, "primary"
-        )
+        primary_capture = self._open_scene_camera(self.scene_device, "primary")
         try:
             secondary_capture = self._open_scene_camera(
                 self.scene_secondary_device, "secondary"
@@ -133,9 +137,7 @@ class RecordingCameraCapture:
             self._start_ros()
             for key, capture in self._scene_captures.items():
                 device = (
-                    self.scene_device
-                    if key == "scene"
-                    else self.scene_secondary_device
+                    self.scene_device if key == "scene" else self.scene_secondary_device
                 )
                 thread = threading.Thread(
                     target=self._scene_loop,
@@ -166,15 +168,11 @@ class RecordingCameraCapture:
             raise
 
     @staticmethod
-    def _open_scene_camera(
-        device: str, label: str
-    ) -> cv2.VideoCapture:
+    def _open_scene_camera(device: str, label: str) -> cv2.VideoCapture:
         capture = cv2.VideoCapture(device, cv2.CAP_V4L2)
         if not capture.isOpened():
             capture.release()
-            raise ConnectionError(
-                f"Could not open {label} ordinary camera: {device}"
-            )
+            raise ConnectionError(f"Could not open {label} ordinary camera: {device}")
         # The ordinary cameras otherwise default to uncompressed YUYV,
         # which consumes about 148 Mbit/s at 640x480@30 on the same USB 2.0
         # host bus. Prefer each camera's hardware MJPEG stream.
@@ -189,6 +187,11 @@ class RecordingCameraCapture:
         return capture
 
     def _start_ros(self) -> None:
+        ros_python = os.environ.get("OPENARM_ROS_PYTHON")
+        if ros_python:
+            self._start_ros_bridge(ros_python)
+            return
+
         try:
             import rclpy
             from rclpy.qos import qos_profile_sensor_data
@@ -196,7 +199,7 @@ class RecordingCameraCapture:
         except ImportError as exc:
             raise RuntimeError(
                 "ROS 2 Python modules are unavailable. Start recording through "
-                "scripts/record.sh so the Jazzy environment is sourced."
+                "scripts/record.sh so the matching ROS environment is sourced."
             ) from exc
 
         rclpy.init(args=None)
@@ -234,6 +237,121 @@ class RecordingCameraCapture:
         )
         self._ros_thread.start()
 
+    def _start_ros_bridge(self, ros_python: str) -> None:
+        bridge_script = Path(__file__).with_name("ros_image_bridge.py")
+        if not Path(ros_python).is_file():
+            raise FileNotFoundError(f"ROS system Python does not exist: {ros_python}")
+        if not bridge_script.is_file():
+            raise FileNotFoundError(
+                f"Aurora ROS bridge script is missing: {bridge_script}"
+            )
+
+        self._ros_bridge_tmp = tempfile.TemporaryDirectory(prefix="openarm-ros-")
+        socket_path = str(Path(self._ros_bridge_tmp.name) / "aurora.sock")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(socket_path)
+        server.listen(1)
+        server.settimeout(0.2)
+        self._ros_bridge_server = server
+
+        command = [
+            ros_python,
+            str(bridge_script),
+            "--socket",
+            socket_path,
+            "--rgb-topic",
+            self.aurora_rgb_topic,
+            "--depth-topic",
+            self.aurora_depth_topic,
+            "--rgb-info-topic",
+            self.aurora_rgb_info_topic,
+            "--depth-info-topic",
+            self.aurora_depth_info_topic,
+        ]
+        self._ros_bridge_process = subprocess.Popen(command)
+        self._ros_thread = threading.Thread(
+            target=self._ros_bridge_loop,
+            name="openarm-aurora-ros-bridge",
+            daemon=True,
+        )
+        self._ros_thread.start()
+
+    @staticmethod
+    def _receive_exact(connection: socket.socket, size: int) -> bytes:
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining:
+            chunk = connection.recv(remaining)
+            if not chunk:
+                raise ConnectionError("Aurora ROS bridge disconnected")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def _ros_bridge_loop(self) -> None:
+        try:
+            assert self._ros_bridge_server is not None
+            while not self._stop.is_set():
+                process = self._ros_bridge_process
+                if process is not None and process.poll() is not None:
+                    raise RuntimeError(
+                        "Aurora ROS bridge exited before connecting "
+                        f"(status {process.returncode})"
+                    )
+                try:
+                    connection, _ = self._ros_bridge_server.accept()
+                    break
+                except TimeoutError:
+                    continue
+                except OSError:
+                    if self._stop.is_set():
+                        return
+                    raise
+            else:
+                return
+
+            self._ros_bridge_connection = connection
+            while not self._stop.is_set():
+                envelope = self._receive_exact(connection, 8)
+                metadata_size, payload_size = struct.unpack("!II", envelope)
+                if metadata_size > 64 * 1024 or payload_size > 32 * 1024 * 1024:
+                    raise ValueError("Aurora ROS bridge frame is too large")
+                metadata = json.loads(self._receive_exact(connection, metadata_size))
+                payload = self._receive_exact(connection, payload_size)
+                self._handle_ros_bridge_message(metadata, payload)
+        except BaseException as exc:
+            if not self._stop.is_set():
+                self._latch_error(exc)
+
+    def _handle_ros_bridge_message(
+        self, metadata: dict[str, Any], payload: bytes
+    ) -> None:
+        message_type = metadata.get("type")
+        key = metadata.get("key")
+        if message_type == "image":
+            message = SimpleNamespace(
+                encoding=metadata["encoding"],
+                data=payload,
+                height=metadata["height"],
+                width=metadata["width"],
+                step=metadata["step"],
+                is_bigendian=metadata["is_bigendian"],
+            )
+            if key == "aurora_rgb":
+                self._on_aurora_rgb(message)
+            elif key == "aurora_depth":
+                self._on_aurora_depth(message)
+            else:
+                raise ValueError(f"Unknown Aurora bridge image key: {key}")
+            return
+        if message_type == "camera_info":
+            if key not in ("aurora_rgb", "aurora_depth"):
+                raise ValueError(f"Unknown Aurora bridge camera-info key: {key}")
+            with self._lock:
+                self._camera_info[key] = metadata["info"]
+            return
+        raise ValueError(f"Unknown Aurora ROS bridge message type: {message_type}")
+
     def _ros_loop(self) -> None:
         try:
             while not self._stop.is_set():
@@ -256,8 +374,7 @@ class RecordingCameraCapture:
                     failures += 1
                     if failures >= 10:
                         raise RuntimeError(
-                            f"Ordinary camera stopped returning frames: "
-                            f"{device}"
+                            f"Ordinary camera stopped returning frames: {device}"
                         )
                     time.sleep(0.02)
                     continue
@@ -280,15 +397,13 @@ class RecordingCameraCapture:
             }
             channels = channels_by_encoding.get(encoding)
             if channels is None:
-                raise ValueError(
-                    f"Unsupported Aurora RGB encoding: {message.encoding}"
-                )
+                raise ValueError(f"Unsupported Aurora RGB encoding: {message.encoding}")
             rows = np.frombuffer(message.data, dtype=np.uint8).reshape(
                 int(message.height), int(message.step)
             )
-            pixels = rows[
-                :, : int(message.width) * channels
-            ].reshape(int(message.height), int(message.width), channels)
+            pixels = rows[:, : int(message.width) * channels].reshape(
+                int(message.height), int(message.width), channels
+            )
             if encoding == "rgb8":
                 rgb = pixels.copy()
             elif encoding == "bgr8":
@@ -323,8 +438,10 @@ class RecordingCameraCapture:
                 int(message.height), int(message.step)
             )
             packed = byte_rows[:, :row_bytes].copy()
-            depth = packed.reshape(-1).view(dtype).reshape(
-                int(message.height), int(message.width)
+            depth = (
+                packed.reshape(-1)
+                .view(dtype)
+                .reshape(int(message.height), int(message.width))
             )
             depth_m = depth.astype(np.float32) * scale
             depth_m[~np.isfinite(depth_m)] = 0.0
@@ -355,15 +472,12 @@ class RecordingCameraCapture:
         while time.monotonic() < deadline:
             self._raise_if_failed()
             with self._lock:
-                missing = [
-                    key for key in self._FRAME_KEYS if key not in self._frames
-                ]
+                missing = [key for key in self._FRAME_KEYS if key not in self._frames]
             if not missing:
                 return
             time.sleep(0.05)
         raise TimeoutError(
-            "Timed out waiting for recording cameras: "
-            + ", ".join(missing)
+            "Timed out waiting for recording cameras: " + ", ".join(missing)
         )
 
     def snapshot(self) -> dict[str, np.ndarray]:
@@ -379,9 +493,7 @@ class RecordingCameraCapture:
                 frame, timestamp = item
                 age = now - timestamp
                 if age > self.stale_timeout_s:
-                    raise TimeoutError(
-                        f"Camera frame is stale: {key} age={age:.3f}s"
-                    )
+                    raise TimeoutError(f"Camera frame is stale: {key} age={age:.3f}s")
                 result[key] = frame.copy()
         return result
 
@@ -392,8 +504,7 @@ class RecordingCameraCapture:
         with self._lock:
             info = dict(self._camera_info)
             shapes = {
-                key: list(frame.shape)
-                for key, (frame, _) in self._frames.items()
+                key: list(frame.shape) for key, (frame, _) in self._frames.items()
             }
         payload = {
             "physical_cameras": {
@@ -442,9 +553,7 @@ class RecordingCameraCapture:
                     raise
                 panels = [
                     self._rgb_preview(frames["scene"], "Scene RGB 1"),
-                    self._rgb_preview(
-                        frames["scene_secondary"], "Scene RGB 2"
-                    ),
+                    self._rgb_preview(frames["scene_secondary"], "Scene RGB 2"),
                     self._rgb_preview(frames["aurora_rgb"], "Aurora RGB"),
                     self._depth_preview(
                         frames["aurora_depth"], "Aurora Depth (0.15-4.0 m)"
@@ -540,6 +649,27 @@ class RecordingCameraCapture:
 
     def close(self) -> None:
         self._stop.set()
+        for bridge_socket in (
+            self._ros_bridge_connection,
+            self._ros_bridge_server,
+        ):
+            if bridge_socket is not None:
+                try:
+                    bridge_socket.close()
+                except OSError:
+                    pass
+        self._ros_bridge_connection = None
+        self._ros_bridge_server = None
+
+        if self._ros_bridge_process is not None:
+            self._ros_bridge_process.terminate()
+            try:
+                self._ros_bridge_process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                self._ros_bridge_process.kill()
+                self._ros_bridge_process.wait(timeout=2.0)
+            self._ros_bridge_process = None
+
         for capture in self._scene_captures.values():
             capture.release()
         self._scene_captures.clear()
@@ -566,4 +696,7 @@ class RecordingCameraCapture:
             except Exception:
                 logger.exception("Failed to shut down Aurora ROS context")
             self._rclpy = None
+        if self._ros_bridge_tmp is not None:
+            self._ros_bridge_tmp.cleanup()
+            self._ros_bridge_tmp = None
         self._connected = False
