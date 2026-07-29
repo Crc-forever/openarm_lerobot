@@ -657,7 +657,14 @@ class LeRobotEpisodeRecorder:
                                         num_threads=2
                                     )
                                 continue
-                            self.dataset.save_episode()
+                            # LeRobot's parallel path forks worker processes.
+                            # This process has already initialized JAX/CUDA,
+                            # so forked NVENC workers fail even though the same
+                            # streams encode correctly in-process. Encode the
+                            # four streams sequentially; RGB still uses NVENC.
+                            self.dataset.save_episode(
+                                parallel_encoding=False
+                            )
                             item.saved = True
                             self.current_episode_frames = 0
                             if restart_image_writer:
