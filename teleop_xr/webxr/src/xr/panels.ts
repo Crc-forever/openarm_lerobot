@@ -31,6 +31,11 @@ import {
 } from "three";
 import { useAppStore } from "../lib/store";
 import { GlobalRefs } from "./global_refs";
+import {
+	ControllerButton,
+	isControllerButtonPressed,
+	resolveControllerSpace,
+} from "./input_compat";
 import { shouldBeginYDrag, shouldEndYDrag } from "./panel_y_drag_logic";
 
 type MaterialWithMap = Material & {
@@ -515,21 +520,25 @@ export class YButtonPanelDragSystem extends createSystem({}) {
 	private previousYPressed = false;
 	private disabled = false;
 
-	private buttonPressed(handedness: "left" | "right", index: number): boolean {
-		const buttons = this.input?.gamepads?.[handedness]?.gamepad?.buttons;
-		if (!buttons || buttons.length <= index) {
-			return false;
-		}
-		return Boolean(buttons[index]?.pressed);
+	private buttonPressed(
+		handedness: "left" | "right",
+		componentId: string,
+		fallbackIndex: number,
+	): boolean {
+		return isControllerButtonPressed(
+			this.input?.gamepads?.[handedness],
+			componentId,
+			fallbackIndex,
+		);
 	}
 
 	private getLeftRaySpace(): Object3D | null {
-		const player = this.world.player;
-		if (!player) return null;
-		const primary = player.raySpaces?.left;
-		const secondary = player.secondaryRaySpaces?.left;
-		const isPrimary = this.input?.isPrimary?.("controller", "left");
-		return (isPrimary === false ? secondary ?? primary : primary ?? secondary) ?? null;
+		return resolveControllerSpace(
+			this.world.player,
+			this.input,
+			"left",
+			"ray",
+		);
 	}
 
 	private updateRay(raySpace: Object3D): void {
@@ -598,8 +607,16 @@ export class YButtonPanelDragSystem extends createSystem({}) {
 	}
 
 	private updateYDrag() {
-		const yPressed = this.buttonPressed("left", Y_BUTTON_INDEX);
-		const bPressed = this.buttonPressed("right", B_BUTTON_INDEX);
+		const yPressed = this.buttonPressed(
+			"left",
+			ControllerButton.secondaryLeft,
+			Y_BUTTON_INDEX,
+		);
+		const bPressed = this.buttonPressed(
+			"right",
+			ControllerButton.secondaryRight,
+			B_BUTTON_INDEX,
+		);
 		const teleopEngaged = useAppStore.getState().teleopEngaged;
 		const raySpace = this.getLeftRaySpace();
 

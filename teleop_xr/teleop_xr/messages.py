@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import List, Optional, Literal, Dict
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class XRButtonState(BaseModel):
@@ -12,6 +12,8 @@ class XRButtonState(BaseModel):
 class XRGamepad(BaseModel):
     buttons: List[XRButtonState]
     axes: List[float]
+    profiles: List[str] = Field(default_factory=list)
+    mapping: str = ""
 
 
 class XRHandedness(str, Enum):

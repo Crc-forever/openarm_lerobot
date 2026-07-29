@@ -1,5 +1,6 @@
 import { createSystem } from "@iwsdk/core";
 import { type Object3D, Vector3 } from "three";
+import { resolveControllerSpace } from "./input_compat";
 
 type AnchoredPanel = {
 	entity: {
@@ -50,15 +51,9 @@ export class ControllerCameraPanelSystem extends createSystem({}) {
 			// Resolve controller object based on primary/secondary controller spaces
 			let controllerObject: Object3D | null | undefined;
 			if (handedness) {
-				const primaryGrip = player.gripSpaces?.[handedness];
-				const secondaryGrip = player.secondaryGripSpaces?.[handedness];
-				const primaryRay = player.raySpaces?.[handedness];
-				const secondaryRay = player.secondaryRaySpaces?.[handedness];
-				const isPrimary = input?.isPrimary?.("controller", handedness);
-				const preferredPrimary = primaryGrip ?? primaryRay;
-				const preferredSecondary = secondaryGrip ?? secondaryRay;
 				controllerObject =
-					isPrimary === false ? preferredSecondary : preferredPrimary;
+					resolveControllerSpace(player, input, handedness, "grip") ??
+					resolveControllerSpace(player, input, handedness, "ray");
 			}
 
 			// Fallback to getter or direct reference

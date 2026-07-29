@@ -301,11 +301,6 @@ class LeRobotOpenArmOutput:
             return self._worker_error
 
     @property
-    def camera_capture(self) -> Any | None:
-        """Expose the connected shared capture for read-only video consumers."""
-        return self._camera_capture
-
-    @property
     def arm_power_state(self) -> dict[str, ArmPowerState]:
         """Return host-confirmed per-arm power state without claiming the unknown safe."""
         with self._lifecycle_lock:

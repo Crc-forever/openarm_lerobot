@@ -53,6 +53,15 @@ def _resolve_frontend_paths(package_dir: str) -> tuple[str, str, str, str]:
     return dist_dir, dist_index, "/", "webxr"
 
 
+def _frontend_cache_control(path: str) -> str:
+    """Keep Pico HTML/config fresh while safely caching hashed Next.js assets."""
+    if path.startswith("/_next/static/"):
+        return "public, max-age=31536000, immutable"
+    if path == "/" or path.endswith((".html", ".txt", ".json")):
+        return "no-store, max-age=0"
+    return "no-cache"
+
+
 def get_local_ip():
     try:
         # Connect to an external address (doesn't actually send data)
@@ -534,9 +543,20 @@ class Teleop:
             THIS_DIR
         )
 
+        @self.__app.middleware("http")
+        async def frontend_cache_headers(request, call_next):
+            response = await call_next(request)
+            response.headers["Cache-Control"] = _frontend_cache_control(
+                request.url.path
+            )
+            return response
+
         @self.__app.get("/")
         async def index():
-            return FileResponse(index_path)
+            return FileResponse(
+                index_path,
+                headers={"Cache-Control": _frontend_cache_control("/")},
+            )
 
         @self.__app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):

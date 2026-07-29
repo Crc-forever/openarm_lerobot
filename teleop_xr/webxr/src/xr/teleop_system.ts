@@ -8,11 +8,25 @@ import {
 } from "../lib/store";
 import { setCameraViewsConfig } from "./camera_views";
 import { GlobalRefs } from "./global_refs";
+import {
+	ControllerButton,
+	describeController,
+	isControllerButtonPressed,
+	resolveControllerSpace,
+	type StatefulGamepadLike,
+} from "./input_compat";
 import { RobotModelSystem } from "./robot_system";
 
 type DevicePose = {
 	position: { x: number; y: number; z: number };
 	orientation: { x: number; y: number; z: number; w: number };
+};
+
+type WireGamepad = {
+	buttons: Array<{ pressed: boolean; touched: boolean; value: number }>;
+	axes: number[];
+	profiles: string[];
+	mapping: string;
 };
 
 export class TeleopSystem extends createSystem({}) {
@@ -29,6 +43,7 @@ export class TeleopSystem extends createSystem({}) {
 	private clientId = getClientId();
 	private reconnectTimer: number | null = null;
 	private reconnectAttempt = 0;
+	private loggedControllerSignatures = new Set<string>();
 
 	init() {
 		this.connectWS();
@@ -177,13 +192,9 @@ export class TeleopSystem extends createSystem({}) {
 		gripSpace: any,
 		// biome-ignore lint/suspicious/noExplicitAny: fallback for incomplete runtimes
 		raySpace: any,
-		// biome-ignore lint/suspicious/noExplicitAny: legacy
-		gamepad: any,
-		isHandPrimary: boolean,
+		gamepad: StatefulGamepadLike | undefined,
 	) {
-		if (isHandPrimary) {
-			return null;
-		}
+		if (!gamepad) return null;
 
 		// gripSpace represents the physical controller grip, including full
 		// wrist orientation. target-ray space is only a compatibility fallback.
@@ -196,10 +207,7 @@ export class TeleopSystem extends createSystem({}) {
 			role: string;
 			handedness: string;
 			gripPose: DevicePose;
-			gamepad?: {
-				buttons: Array<{ pressed: boolean; touched: boolean; value: number }>;
-				axes: number[];
-			};
+			gamepad?: WireGamepad;
 		} = {
 			role: "controller",
 			handedness,
@@ -208,18 +216,38 @@ export class TeleopSystem extends createSystem({}) {
 
 		const rawGamepad = gamepad?.gamepad;
 		if (rawGamepad) {
+			const metadata = describeController(gamepad);
 			device.gamepad = {
 				// biome-ignore lint/suspicious/noExplicitAny: legacy
-				buttons: Array.from(rawGamepad.buttons).map((button: any) => ({
+				buttons: Array.from(rawGamepad.buttons ?? []).map((button: any) => ({
 					pressed: button.pressed,
 					touched: button.touched,
 					value: button.value,
 				})),
-				axes: Array.from(rawGamepad.axes),
+				axes: Array.from(rawGamepad.axes ?? []),
+				profiles: metadata?.profiles ?? [],
+				mapping: metadata?.mapping ?? "",
 			};
 		}
 
 		return device;
+	}
+
+	private logControllerCompatibility(
+		handedness: "left" | "right",
+		controller: StatefulGamepadLike | undefined,
+	) {
+		const metadata = describeController(controller);
+		if (!metadata) return;
+
+		const signature = `${handedness}:${metadata.profiles.join(",")}:${metadata.mapping}:${metadata.buttonCount}:${metadata.axesCount}`;
+		if (this.loggedControllerSignatures.has(signature)) return;
+		this.loggedControllerSignatures.add(signature);
+
+		console.info(
+			`[XRInputCompat] ${handedness} controller`,
+			JSON.stringify(metadata),
+		);
 	}
 
 	update(_delta: number, time: number) {
@@ -287,14 +315,15 @@ export class TeleopSystem extends createSystem({}) {
 
 	// biome-ignore lint/suspicious/noExplicitAny: legacy
 	private isTeleopEngaged(input: any): boolean {
-		const leftButtons = input?.gamepads?.left?.gamepad?.buttons;
-		const rightButtons = input?.gamepads?.right?.gamepad?.buttons;
-
-		const leftSqueezed = Boolean(
-			leftButtons?.length > 1 && leftButtons[1]?.pressed,
+		const leftSqueezed = isControllerButtonPressed(
+			input?.gamepads?.left,
+			ControllerButton.squeeze,
+			1,
 		);
-		const rightSqueezed = Boolean(
-			rightButtons?.length > 1 && rightButtons[1]?.pressed,
+		const rightSqueezed = isControllerButtonPressed(
+			input?.gamepads?.right,
+			ControllerButton.squeeze,
+			1,
 		);
 
 		return leftSqueezed && rightSqueezed;
@@ -302,33 +331,59 @@ export class TeleopSystem extends createSystem({}) {
 
 	// biome-ignore lint/suspicious/noExplicitAny: legacy
 	gatherInputState(input: any, teleopSettings: TeleopSettings) {
-		const leftGamepad = input?.gamepads?.left?.gamepad;
-		if (leftGamepad?.buttons && leftGamepad.buttons.length > 0) {
-			// The menu button is the last item of the left gamepad button array
-			const menuButton = leftGamepad.buttons[leftGamepad.buttons.length - 1];
+		const leftController = input?.gamepads?.left as
+			| StatefulGamepadLike
+			| undefined;
+		const rightController = input?.gamepads?.right as
+			| StatefulGamepadLike
+			| undefined;
+		this.logControllerCompatibility("left", leftController);
+		this.logControllerCompatibility("right", rightController);
 
-			if (menuButton) {
-				if (menuButton.pressed) {
-					if (!this.menuButtonState) {
-						this.menuButtonState = true;
-						const teleopPanelRoot = GlobalRefs.teleopPanelRoot;
-						if (teleopPanelRoot?.entity?.hasComponent(Visibility)) {
-							const currentVisibility = teleopPanelRoot.entity.getValue(
-								Visibility,
-								"isVisible",
-							);
-							teleopPanelRoot.entity.setValue(
-								Visibility,
-								"isVisible",
-								!currentVisibility,
-							);
-						}
-					}
-				} else {
-					this.menuButtonState = false;
+		// Only use a true semantic menu component. On PICO 4/4 Ultra the last
+		// app-visible button is Y, so treating the last array entry as Menu
+		// conflicts with Y-drag.
+		const menuPressed = isControllerButtonPressed(
+			leftController,
+			ControllerButton.menu,
+			Number.MAX_SAFE_INTEGER,
+		);
+		if (menuPressed) {
+			if (!this.menuButtonState) {
+				this.menuButtonState = true;
+				const teleopPanelRoot = GlobalRefs.teleopPanelRoot;
+				if (teleopPanelRoot?.entity?.hasComponent(Visibility)) {
+					const currentVisibility = teleopPanelRoot.entity.getValue(
+						Visibility,
+						"isVisible",
+					);
+					teleopPanelRoot.entity.setValue(
+						Visibility,
+						"isVisible",
+						!currentVisibility,
+					);
 				}
 			}
+		} else {
+			this.menuButtonState = false;
 		}
+
+		// biome-ignore lint/suspicious/noExplicitAny: SDK player type is runtime-owned
+		const player = (this as any).player ?? this.world.player;
+		const leftGrip = resolveControllerSpace(
+			player,
+			input,
+			"left",
+			"grip",
+		);
+		const leftRay = resolveControllerSpace(player, input, "left", "ray");
+		const rightGrip = resolveControllerSpace(
+			player,
+			input,
+			"right",
+			"grip",
+		);
+		const rightRay = resolveControllerSpace(player, input, "right", "ray");
 
 		const fetchStart = performance.now();
 		const timestamp_unix_ms = Date.now();
@@ -337,14 +392,9 @@ export class TeleopSystem extends createSystem({}) {
 			handedness: string;
 			pose?: DevicePose;
 			gripPose?: DevicePose;
-			gamepad?: {
-				buttons: Array<{ pressed: boolean; touched: boolean; value: number }>;
-				axes: number[];
-			};
+			gamepad?: WireGamepad;
 		}> = [];
 
-		// biome-ignore lint/suspicious/noExplicitAny: legacy
-		const player = (this as any).player ?? this.world.player;
 		const headPose = this.poseFromObject(player?.head);
 		if (headPose) {
 			devices.push({
@@ -356,10 +406,9 @@ export class TeleopSystem extends createSystem({}) {
 
 		const leftDevice = this.buildControllerDevice(
 			"left",
-			player?.gripSpaces?.left,
-			player?.raySpaces?.left,
-			input?.gamepads?.left,
-			Boolean(input?.isPrimary?.("hand", "left")),
+			leftGrip,
+			leftRay,
+			leftController,
 		);
 		if (leftDevice) {
 			devices.push(leftDevice);
@@ -367,10 +416,9 @@ export class TeleopSystem extends createSystem({}) {
 
 		const rightDevice = this.buildControllerDevice(
 			"right",
-			player?.gripSpaces?.right,
-			player?.raySpaces?.right,
-			input?.gamepads?.right,
-			Boolean(input?.isPrimary?.("hand", "right")),
+			rightGrip,
+			rightRay,
+			rightController,
 		);
 		if (rightDevice) {
 			devices.push(rightDevice);

@@ -259,6 +259,27 @@ if [[ "$pico_link" == "usb" ]]; then
 
   adb "${adb_target[@]}" reverse \
     "tcp:${teleop_port}" "tcp:${teleop_port}"
+  pico_model="$(
+    adb "${adb_target[@]}" shell getprop pxr.vendorhw.product.model \
+      2>/dev/null | tr -d '\r'
+  )"
+  if [[ -z "$pico_model" ]]; then
+    pico_model="$(
+      adb "${adb_target[@]}" shell getprop ro.product.model \
+        2>/dev/null | tr -d '\r'
+    )"
+  fi
+  pico_os="$(
+    adb "${adb_target[@]}" shell getprop ro.pui.build.version \
+      2>/dev/null | tr -d '\r'
+  )"
+  pico_browser="$(
+    adb "${adb_target[@]}" shell dumpsys package com.pico.browser \
+      2>/dev/null |
+      awk -F= '/versionName=/{print $2; exit}' |
+      tr -d '\r '
+  )"
+  echo "检测到 Pico: ${pico_model:-未知型号}，PICO OS ${pico_os:-未知}，Browser ${pico_browser:-未知}"
   pico_reverse_active=1
   teleop_host="127.0.0.1"
   pico_url="https://localhost:${teleop_port}"
