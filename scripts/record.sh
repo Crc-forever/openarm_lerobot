@@ -70,18 +70,27 @@ ensure_tls_certificate() {
 }
 
 cleanup() {
-  if [[ -n "$driver_pid" ]] && kill -0 "$driver_pid" 2>/dev/null; then
-    kill -INT "$driver_pid" 2>/dev/null || true
-    (
-      sleep 3
-      kill -TERM "$driver_pid" 2>/dev/null || true
-      sleep 2
-      kill -KILL "$driver_pid" 2>/dev/null || true
-    ) &
-    cleanup_watchdog_pid=$!
+  if [[ -n "$driver_pid" ]] && \
+    kill -0 -- "-${driver_pid}" 2>/dev/null; then
+    # The ROS launch process and every camera child run in a dedicated
+    # session/process group. Signal the whole group so a Python-side startup
+    # exception cannot leave aurora930_node holding the camera.
+    kill -INT -- "-${driver_pid}" 2>/dev/null || true
+    for _ in {1..30}; do
+      kill -0 -- "-${driver_pid}" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 -- "-${driver_pid}" 2>/dev/null; then
+      kill -TERM -- "-${driver_pid}" 2>/dev/null || true
+    fi
+    for _ in {1..20}; do
+      kill -0 -- "-${driver_pid}" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 -- "-${driver_pid}" 2>/dev/null; then
+      kill -KILL -- "-${driver_pid}" 2>/dev/null || true
+    fi
     wait "$driver_pid" 2>/dev/null || true
-    kill "$cleanup_watchdog_pid" 2>/dev/null || true
-    wait "$cleanup_watchdog_pid" 2>/dev/null || true
   fi
   if (( pico_reverse_active )); then
     adb "${adb_target[@]}" reverse --remove \
@@ -346,7 +355,9 @@ fi
 
 mkdir -p "${project_dir}/logs"
 driver_log="${project_dir}/logs/aurora930-recording.log"
-ros2 launch deptrum-ros-driver-aurora930 aurora930_launch.py \
+# A dedicated session makes cleanup reliable even if ros2 launch exits before
+# one of its children or reparents it to the user service manager.
+setsid ros2 launch deptrum-ros-driver-aurora930 aurora930_launch.py \
   ir_enable:=false \
   point_cloud_enable:=false \
   rgbd_enable:=true \
