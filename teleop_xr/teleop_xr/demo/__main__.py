@@ -1173,7 +1173,7 @@ def main():
                     )
                     return
                 try:
-                    session_index, existing_count = (
+                    episode_number, existing_count = (
                         action_output.start_recording_episode()
                     )
                     target_text = (
@@ -1183,12 +1183,12 @@ def main():
                     )
                     state_container["recording_status"] = "recording"
                     logger.info(
-                        "Recording started: session episode "
-                        f"{session_index}/{target_text}; dataset already has "
+                        f"Recording started: dataset episode {episode_number}; "
+                        f"this run target {target_text}; dataset already has "
                         f"{existing_count} saved episode(s)"
                     )
                     announce_recording_status(
-                        f"Recording episode {session_index}."
+                        f"Recording episode {episode_number}."
                     )
                 except Exception as exc:
                     logger.warning(f"Cannot start recording: {exc}")
@@ -1213,10 +1213,15 @@ def main():
                     try:
                         operation()
                     except Exception as exc:
-                        state_container["recording_status"] = "error"
+                        # Episode operations are recoverable whenever the
+                        # recorder successfully cleaned the failed episode.
+                        # Return the controls to A=start instead of trapping
+                        # the UI in an unrecoverable "error" state.
+                        state_container["recording_status"] = "waiting"
                         logger.error(f"{operation_name} failed: {exc}")
                         announce_recording_status(
-                            "Recording operation failed. Check the computer."
+                            "Recording operation failed. The episode was not "
+                            "saved. Ready to start the next episode."
                         )
                     finally:
                         recording_operation_lock.release()
@@ -1294,13 +1299,13 @@ def main():
                             "finishing dataset"
                         )
                         announce_recording_status(
-                            f"Episode {session_count} saved. Recording complete.",
+                            f"Episode {dataset_count} saved. Recording complete.",
                             wait_until_sent=True,
                         )
                         os.kill(os.getpid(), signal.SIGINT)
                     else:
                         announce_recording_status(
-                            f"Episode {session_count} saved. Ready for the next episode."
+                            f"Episode {dataset_count} saved. Ready for the next episode."
                         )
 
                 _run_recording_operation("finish", _finish)

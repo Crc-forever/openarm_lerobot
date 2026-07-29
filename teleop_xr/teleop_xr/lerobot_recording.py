@@ -483,7 +483,7 @@ class LeRobotEpisodeRecorder:
         return True
 
     def start_episode(self) -> tuple[int, int]:
-        """Enter recording state for a new episode."""
+        """Enter recording state and return its dataset-wide display number."""
         with self._state_lock:
             if self.closed:
                 raise RuntimeError("Dataset recorder is closed")
@@ -496,7 +496,7 @@ class LeRobotEpisodeRecorder:
             self._recording = True
             self.next_frame_time = time.monotonic()
             return (
-                self.session_saved_episodes + 1,
+                self.dataset.meta.total_episodes + 1,
                 self.dataset.meta.total_episodes,
             )
 
@@ -573,19 +573,29 @@ class LeRobotEpisodeRecorder:
             self._latch_error(error)
             raise error from exc
 
-        if not command.done.wait(timeout_s):
-            error = TimeoutError("Timed out while saving the current episode")
-            self._latch_error(error)
-            raise error
-        if command.error is not None:
-            raise RuntimeError("Failed to save the current episode") from command.error
+        try:
+            if not command.done.wait(timeout_s):
+                error = TimeoutError(
+                    "Timed out while saving the current episode"
+                )
+                self._latch_error(error)
+                raise error
+            if command.error is not None:
+                raise RuntimeError(
+                    "Failed to save the current episode; "
+                    "the failed episode was discarded and the recorder is ready"
+                ) from command.error
+        finally:
+            # A normal save failure only invalidates the current episode. The
+            # writer loop cleans that buffer and stays alive, so do not leave
+            # the controls permanently disabled.
+            with self._state_lock:
+                if not self.closed and self.worker_error is None:
+                    self.next_frame_time = time.monotonic()
+                    if command.saved:
+                        self.session_saved_episodes += 1
+                    self._accepting = True
 
-        with self._state_lock:
-            if not self.closed and self.worker_error is None:
-                self.next_frame_time = time.monotonic()
-                self._accepting = True
-                if command.saved:
-                    self.session_saved_episodes += 1
         return (
             command.saved,
             self.session_saved_episodes,
@@ -634,6 +644,10 @@ class LeRobotEpisodeRecorder:
                 if item is _STOP_WRITER:
                     return
                 if isinstance(item, _SaveEpisode):
+                    episode_count_before_save = (
+                        self.dataset.meta.total_episodes
+                    )
+                    restart_image_writer = False
                     try:
                         if self.dataset.has_pending_frames():
                             (
@@ -673,9 +687,62 @@ class LeRobotEpisodeRecorder:
                                 )
                         item.episode_count = self.dataset.meta.total_episodes
                     except BaseException as exc:
-                        item.error = exc
-                        self._latch_error(exc)
-                        return
+                        # LeRobot may raise after its metadata commit (for
+                        # example while clearing temporary images). In that
+                        # case the episode is already durable and should be
+                        # reported as saved.
+                        item.episode_count = (
+                            self.dataset.meta.total_episodes
+                        )
+                        if item.episode_count > episode_count_before_save:
+                            try:
+                                # Retry the normal post-commit buffer cleanup
+                                # before accepting frames for the next episode.
+                                self.dataset.clear_episode_buffer()
+                                if restart_image_writer:
+                                    self.dataset.writer.start_image_writer(
+                                        num_threads=2
+                                    )
+                            except BaseException as cleanup_exc:
+                                item.error = cleanup_exc
+                                self._latch_error(cleanup_exc)
+                                return
+                            else:
+                                item.saved = True
+                                self.current_episode_frames = 0
+                                logging.getLogger(__name__).warning(
+                                    "Episode %d was committed; recovered from "
+                                    "post-save cleanup failure: %s",
+                                    item.episode_count,
+                                    exc,
+                                )
+                        else:
+                            try:
+                                # A failed encode/write must not poison all
+                                # later controls. Discard just this episode and
+                                # keep the command loop available for the next
+                                # A press.
+                                # Call clear unconditionally because
+                                # save_episode() mutates the buffer before
+                                # encoding, so has_pending_frames() itself may
+                                # no longer be safe after an exception.
+                                self.dataset.clear_episode_buffer()
+                                if restart_image_writer:
+                                    self.dataset.writer.start_image_writer(
+                                        num_threads=2
+                                    )
+                                self.current_episode_frames = 0
+                            except BaseException as cleanup_exc:
+                                item.error = cleanup_exc
+                                self._latch_error(cleanup_exc)
+                                return
+                            item.error = exc
+                            logging.getLogger(__name__).error(
+                                "Failed to save episode %d; discarded it and "
+                                "kept the recorder available: %s",
+                                episode_count_before_save + 1,
+                                exc,
+                            )
                     finally:
                         item.done.set()
                     continue
