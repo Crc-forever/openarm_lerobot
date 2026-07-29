@@ -13,7 +13,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -63,6 +63,9 @@ class RecordingCameraCapture:
         self.stale_timeout_s = stale_timeout_s
 
         self._frames: dict[str, tuple[np.ndarray, float]] = {}
+        self._frame_listeners: dict[
+            str, list[Callable[[np.ndarray], None]]
+        ] = {}
         self._camera_info: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -466,6 +469,45 @@ class RecordingCameraCapture:
     def _store_frame(self, key: str, frame: np.ndarray) -> None:
         with self._lock:
             self._frames[key] = (frame, time.monotonic())
+            listeners = tuple(self._frame_listeners.get(key, ()))
+        for listener in listeners:
+            try:
+                listener(frame)
+            except Exception:
+                logger.exception("Camera frame listener failed for %s", key)
+
+    def latest_frame(self, key: str) -> np.ndarray | None:
+        """Return a copy of the latest frame for one named stream."""
+        if key not in self._FRAME_KEYS:
+            raise KeyError(f"Unknown camera frame key: {key}")
+        with self._lock:
+            item = self._frames.get(key)
+            return None if item is None else item[0].copy()
+
+    def add_frame_listener(
+        self,
+        key: str,
+        listener: Callable[[np.ndarray], None],
+    ) -> Callable[[], None]:
+        """Subscribe to fresh frames without starting another camera reader."""
+        if key not in self._FRAME_KEYS:
+            raise KeyError(f"Unknown camera frame key: {key}")
+        with self._lock:
+            self._frame_listeners.setdefault(key, []).append(listener)
+
+        def remove() -> None:
+            with self._lock:
+                listeners = self._frame_listeners.get(key)
+                if listeners is None:
+                    return
+                try:
+                    listeners.remove(listener)
+                except ValueError:
+                    return
+                if not listeners:
+                    self._frame_listeners.pop(key, None)
+
+        return remove
 
     def _wait_for_initial_frames(self) -> None:
         deadline = time.monotonic() + self.startup_timeout_s

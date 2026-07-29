@@ -29,6 +29,7 @@ from teleop_xr.config import TeleopSettings
 from teleop_xr.common_cli import CommonCLI
 from teleop_xr.messages import XRState
 from teleop_xr.camera_views import build_camera_views_config
+from teleop_xr.video_stream import ExternalVideoSource, VideoSource
 from teleop_xr.ik_utils import ensure_ik_dependencies, list_robots_or_exit
 from teleop_xr.events import (
     EventProcessor,
@@ -978,6 +979,7 @@ def main():
         wrist_right=cli.wrist_right_device,
         extra_streams=cli.camera,
     )
+    video_sources: dict[str, VideoSource] = {}
 
     robot_vis = None
     if cli.mode == "ik":
@@ -1021,6 +1023,30 @@ def main():
                 camera_preview=cli.camera_preview,
             )
             action_output.connect()
+            camera_capture = action_output.camera_capture
+            if camera_capture is not None:
+                aurora_source = ExternalVideoSource(pixel_format="rgb24")
+                camera_capture.add_frame_listener(
+                    "aurora_rgb",
+                    aurora_source.put_frame,
+                )
+                initial_aurora_frame = camera_capture.latest_frame("aurora_rgb")
+                if initial_aurora_frame is not None:
+                    aurora_source.put_frame(initial_aurora_frame)
+                video_sources["aurora_rgb"] = aurora_source
+                camera_views["aurora_rgb"] = {
+                    "device": "shared://aurora_rgb",
+                    "width": int(initial_aurora_frame.shape[1])
+                    if initial_aurora_frame is not None
+                    else 640,
+                    "height": int(initial_aurora_frame.shape[0])
+                    if initial_aurora_frame is not None
+                    else 480,
+                    "fps": 15,
+                }
+                logger.info(
+                    "Aurora RGB enabled for Pico WebXR using shared capture"
+                )
             state_container["q"] = np.array(
                 action_output.initial_ik_config(
                     robot.actuated_joint_names, state_container["q"]
@@ -1040,7 +1066,7 @@ def main():
         speed=robot.default_speed_ratio if robot else 1.0,
     )
 
-    teleop = Teleop(settings=settings)
+    teleop = Teleop(settings=settings, video_sources=video_sources)
     teleop.set_pose(np.eye(4))
 
     # --- Event Processor Setup ---

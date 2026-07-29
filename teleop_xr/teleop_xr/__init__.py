@@ -353,9 +353,14 @@ class Teleop:
         self.__video_streams = []
 
     async def _start_video_session(self, websocket: WebSocket) -> None:
-        sources = self.__video_sources
-        if not sources and self.__video_streams:
-            sources = build_sources(self.__video_streams)
+        external_ids = set(self.__video_sources)
+        local_configs = [
+            config
+            for config in self.__video_streams
+            if config.id not in external_ids
+        ]
+        sources = build_sources(local_configs)
+        sources.update(self.__video_sources)
 
         existing_session = self.__video_sessions.pop(websocket, None)
         if existing_session is not None:

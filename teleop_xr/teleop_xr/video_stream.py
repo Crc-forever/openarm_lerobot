@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 import asyncio
 import threading
 import time
@@ -62,6 +62,7 @@ def parse_video_config(payload: dict[str, Any]) -> list[VideoStreamConfig]:
 @runtime_checkable
 class VideoSource(Protocol):
     new_frame_event: threading.Event
+    pixel_format: Literal["bgr24", "rgb24"]
 
     def start(self) -> None: ...
     def stop(self) -> None: ...
@@ -69,6 +70,8 @@ class VideoSource(Protocol):
 
 
 class OpenCVVideoSource:
+    pixel_format: Literal["bgr24"] = "bgr24"
+
     def __init__(self, src: int | str, width: int, height: int, fps: int):
         self.src = src
         # Use V4L2 backend for Linux performance
@@ -128,7 +131,11 @@ class OpenCVVideoSource:
 
 
 class ExternalVideoSource:
-    def __init__(self):
+    def __init__(
+        self,
+        pixel_format: Literal["bgr24", "rgb24"] = "bgr24",
+    ):
+        self.pixel_format = pixel_format
         self.frame: np.ndarray | None = None
         self.grabbed = False
         self.read_lock = threading.Lock()
@@ -190,8 +197,10 @@ class CameraStreamTrack(VideoStreamTrack):
             await asyncio.sleep(0.01)
             return await self.recv()
 
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        video_frame = VideoFrame.from_ndarray(frame, format="rgb24")
+        video_frame = VideoFrame.from_ndarray(
+            frame,
+            format=self.source.pixel_format,
+        )
         video_frame.pts = pts
         video_frame.time_base = time_base
         return video_frame
