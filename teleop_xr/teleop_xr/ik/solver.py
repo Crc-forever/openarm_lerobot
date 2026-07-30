@@ -7,6 +7,20 @@ from loguru import logger
 from teleop_xr.ik.robot import BaseRobot
 
 
+_TARGET_FRAME_NAMES = ("left", "right", "head")
+
+
+def _warmup_target_pattern(supported_frames: set[str]) -> tuple[bool, bool, bool]:
+    """Return the target signature used by the default teleop controller."""
+    unknown_frames = supported_frames.difference(_TARGET_FRAME_NAMES)
+    if unknown_frames:
+        raise ValueError(
+            "Unsupported IK target frame(s): "
+            + ", ".join(sorted(unknown_frames))
+        )
+    return tuple(name in supported_frames for name in _TARGET_FRAME_NAMES)
+
+
 class PyrokiSolver:
     """
     Inverse Kinematics (IK) solver using Pyroki and jaxls.
@@ -123,29 +137,18 @@ class PyrokiSolver:
             q_dummy = self.robot.get_default_config()
             target_dummy = jaxlie.SE3.identity()
 
-            warmup_inputs = (
-                (target_dummy, target_dummy, target_dummy),
-                (target_dummy, None, None),
-                (None, target_dummy, None),
-                (None, None, target_dummy),
-                (target_dummy, target_dummy, None),
-                (target_dummy, None, target_dummy),
-                (None, target_dummy, target_dummy),
-                (None, None, None),
+            target_pattern = _warmup_target_pattern(
+                self.robot.supported_frames
+            )
+            warmup_inputs = tuple(
+                target_dummy if enabled else None
+                for enabled in target_pattern
             )
 
-            for target_L, target_R, target_Head in warmup_inputs:
-                warmed = self.solve(target_L, target_R, target_Head, q_dummy)
-                jax.block_until_ready(warmed)
+            warmed = self.solve(*warmup_inputs, q_dummy)
+            jax.block_until_ready(warmed)
 
-            self.warmed_target_patterns = tuple(
-                (
-                    target_L is not None,
-                    target_R is not None,
-                    target_Head is not None,
-                )
-                for target_L, target_R, target_Head in warmup_inputs
-            )
+            self.warmed_target_patterns = (target_pattern,)
             self.warmup_complete = True
             self.warmup_error = None
         except Exception as exc:
