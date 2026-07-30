@@ -52,6 +52,17 @@ def _make_recorder(dataset: _FailOnceDataset) -> LeRobotEpisodeRecorder:
 
 
 class LeRobotRecordingRecoveryTest(unittest.TestCase):
+    def test_rgb_encoder_falls_back_when_nvenc_cannot_open(self) -> None:
+        with patch.object(
+            lerobot_recording,
+            "_probe_av1_nvenc",
+            side_effect=RuntimeError("unsupported GPU"),
+        ):
+            encoder = lerobot_recording._make_rgb_encoder()
+
+        self.assertEqual(encoder.vcodec, "libsvtav1")
+        self.assertEqual(encoder.pix_fmt, "yuv420p")
+
     def test_save_failure_discards_only_episode_and_allows_restart(self) -> None:
         dataset = _FailOnceDataset()
         recorder = _make_recorder(dataset)

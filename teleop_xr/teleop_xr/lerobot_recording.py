@@ -62,14 +62,45 @@ def _feature_schema_contains(stored: Any, expected: Any) -> bool:
     return stored == expected
 
 
-def _make_rgb_gpu_encoder() -> Any:
-    """Build the AV1 NVENC encoder used for RGB recording streams.
+def _probe_av1_nvenc() -> None:
+    import av
+    from fractions import Fraction
 
-    PyAV bundled with LeRobot 0.6.0 supports AV1 NVENC, but that LeRobot
-    release accidentally omits it from its validation allow-list.
+    probe = av.CodecContext.create("av1_nvenc", "w")
+    probe.width = 480
+    probe.height = 300
+    probe.pix_fmt = "yuv420p"
+    probe.time_base = Fraction(1, 15)
+    probe.framerate = Fraction(15, 1)
+    probe.open()
+
+
+def _make_rgb_encoder() -> Any:
+    """Prefer AV1 NVENC, but fall back when the runtime cannot open it.
+
+    Merely listing ``av1_nvenc`` is not enough: PyAV can expose the codec even
+    when the GPU generation or installed NVIDIA driver cannot create an
+    encoder context. Probe the real context before selecting the encoder so an
+    episode cannot fail only after the user presses save.
     """
     import lerobot.configs.video as video_config
     from lerobot.configs import RGBEncoderConfig
+
+    try:
+        _probe_av1_nvenc()
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "AV1 NVENC is present but cannot be opened (%s); "
+            "falling back to libsvtav1 software encoding",
+            exc,
+        )
+        return RGBEncoderConfig(
+            vcodec="libsvtav1",
+            pix_fmt="yuv420p",
+            g=2,
+            crf=30,
+            preset=12,
+        )
 
     video_config.VALID_VIDEO_CODECS |= {"av1_nvenc"}
     return RGBEncoderConfig(
@@ -352,7 +383,7 @@ class LeRobotEpisodeRecorder:
             if has_depth
             else None
         )
-        rgb_encoder = _make_rgb_gpu_encoder() if has_cameras else None
+        rgb_encoder = _make_rgb_encoder() if has_cameras else None
         info_path = self.root / "meta" / "info.json"
         resume_existing = info_path.is_file()
         if resume_existing:
@@ -461,7 +492,7 @@ class LeRobotEpisodeRecorder:
             )
         if rgb_encoder is not None:
             logging.getLogger(__name__).info(
-                "RGB dataset encoding: NVIDIA AV1 NVENC"
+                "RGB dataset encoding: %s", rgb_encoder.vcodec
             )
         logging.getLogger(__name__).info("Dataset session: %s", self.root)
         self._writer = threading.Thread(
@@ -675,7 +706,8 @@ class LeRobotEpisodeRecorder:
                             # This process has already initialized JAX/CUDA,
                             # so forked NVENC workers fail even though the same
                             # streams encode correctly in-process. Encode the
-                            # four streams sequentially; RGB still uses NVENC.
+                            # four streams sequentially with the encoder
+                            # selected during recorder startup.
                             self.dataset.save_episode(
                                 parallel_encoding=False
                             )
