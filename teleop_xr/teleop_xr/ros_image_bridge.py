@@ -16,7 +16,12 @@ from typing import Any
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from sensor_msgs.msg import CameraInfo, Image
 
 
@@ -26,29 +31,38 @@ class AuroraImageBridge:
         self._socket.connect(args.socket)
         self._send_lock = threading.Lock()
         self._node = rclpy.create_node("openarm_aurora_image_bridge")
+        # Never work through a backlog of stale camera frames. Recording takes
+        # snapshots from the latest frame, so a one-sample sensor queue is the
+        # correct trade-off when the consumer is briefly busy.
+        low_latency_sensor_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self._node.create_subscription(
             Image,
             args.rgb_topic,
             lambda message: self._send_image("aurora_rgb", message),
-            qos_profile_sensor_data,
+            low_latency_sensor_qos,
         )
         self._node.create_subscription(
             Image,
             args.depth_topic,
             lambda message: self._send_image("aurora_depth", message),
-            qos_profile_sensor_data,
+            low_latency_sensor_qos,
         )
         self._node.create_subscription(
             CameraInfo,
             args.rgb_info_topic,
             lambda message: self._send_camera_info("aurora_rgb", message),
-            qos_profile_sensor_data,
+            low_latency_sensor_qos,
         )
         self._node.create_subscription(
             CameraInfo,
             args.depth_info_topic,
             lambda message: self._send_camera_info("aurora_depth", message),
-            qos_profile_sensor_data,
+            low_latency_sensor_qos,
         )
 
     def _send(self, metadata: dict[str, Any], payload: bytes = b"") -> None:

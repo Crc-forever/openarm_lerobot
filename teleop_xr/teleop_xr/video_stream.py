@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Any, Literal, Protocol, runtime_checkable
 import asyncio
 import threading
@@ -16,6 +17,32 @@ from aiortc import (
 from aiortc.mediastreams import VideoStreamTrack
 from aiortc.sdp import candidate_from_sdp
 from av import VideoFrame
+
+VIDEO_CLOCK_RATE = 90_000
+VIDEO_TIME_BASE = Fraction(1, VIDEO_CLOCK_RATE)
+
+
+class WallClockVideoTimestamp:
+    """Generate RTP timestamps from real frame arrival time.
+
+    ``VideoStreamTrack.next_timestamp`` assumes a fixed 30 FPS source. Aurora
+    produces 15 FPS, so using that helper makes its media clock advance at half
+    real time and causes the receiver's jitter buffer to grow continuously.
+    """
+
+    def __init__(self) -> None:
+        self._origin_s: float | None = None
+        self._last_pts = -1
+
+    def next(self, now_s: float) -> tuple[int, Fraction]:
+        if self._origin_s is None:
+            self._origin_s = now_s
+            pts = 0
+        else:
+            pts = round((now_s - self._origin_s) * VIDEO_CLOCK_RATE)
+            pts = max(pts, self._last_pts + 1)
+        self._last_pts = pts
+        return pts, VIDEO_TIME_BASE
 
 
 @dataclass(frozen=True)
@@ -174,14 +201,13 @@ class CameraStreamTrack(VideoStreamTrack):
         # This is critical for the frontend to identify the track
         # The frontend uses track.id or transceiver.mid
         self.kind = "video"
+        self._timestamp = WallClockVideoTimestamp()
 
     @property
     def id(self):
         return self._id
 
     async def recv(self):
-        pts, time_base = await self.next_timestamp()
-
         # Ensure source is started
         self.source.start()
 
@@ -197,6 +223,10 @@ class CameraStreamTrack(VideoStreamTrack):
             await asyncio.sleep(0.01)
             return await self.recv()
 
+        # Timestamp the frame from its actual arrival cadence. This preserves a
+        # real-time media clock for 15 FPS Aurora frames and also tolerates
+        # occasional camera or encoder stalls without accumulating playout lag.
+        pts, time_base = self._timestamp.next(time.monotonic())
         video_frame = VideoFrame.from_ndarray(
             frame,
             format=self.source.pixel_format,

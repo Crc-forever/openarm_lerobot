@@ -79,11 +79,14 @@ class MockPeerConnection {
 	}
 
 	emitTrack(trackId: string) {
+		const receiver = { jitterBufferTarget: null };
 		this.ontrack?.({
 			track: { kind: "video", id: trackId } as MediaStreamTrack,
 			streams: [{ id: trackId }] as MediaStream[],
 			transceiver: { mid: trackId } as RTCRtpTransceiver,
+			receiver,
 		} as unknown as RTCTrackEvent);
+		return receiver;
 	}
 }
 
@@ -162,8 +165,9 @@ describe("VideoClient", () => {
 		await flushMicrotasks();
 
 		const firstPeer = MockPeerConnection.instances[0];
-		firstPeer.emitTrack("head");
+		const headReceiver = firstPeer.emitTrack("head");
 		firstPeer.emitTrack("wrist_left");
+		expect(headReceiver.jitterBufferTarget).toBe(0);
 
 		firstSocket.emitClose(1006, "network lost");
 		vi.advanceTimersByTime(3000);

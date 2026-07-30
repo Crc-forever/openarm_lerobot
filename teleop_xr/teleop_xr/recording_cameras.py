@@ -197,7 +197,12 @@ class RecordingCameraCapture:
 
         try:
             import rclpy
-            from rclpy.qos import qos_profile_sensor_data
+            from rclpy.qos import (
+                DurabilityPolicy,
+                HistoryPolicy,
+                QoSProfile,
+                ReliabilityPolicy,
+            )
             from sensor_msgs.msg import CameraInfo, Image
         except ImportError as exc:
             raise RuntimeError(
@@ -207,29 +212,37 @@ class RecordingCameraCapture:
 
         rclpy.init(args=None)
         node = rclpy.create_node("openarm_recording_cameras")
+        # Camera preview/recording always consumes the newest complete frame.
+        # Keeping more samples here only turns temporary load into visible lag.
+        low_latency_sensor_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         node.create_subscription(
             Image,
             self.aurora_rgb_topic,
             self._on_aurora_rgb,
-            qos_profile_sensor_data,
+            low_latency_sensor_qos,
         )
         node.create_subscription(
             Image,
             self.aurora_depth_topic,
             self._on_aurora_depth,
-            qos_profile_sensor_data,
+            low_latency_sensor_qos,
         )
         node.create_subscription(
             CameraInfo,
             self.aurora_rgb_info_topic,
             lambda message: self._on_camera_info("aurora_rgb", message),
-            qos_profile_sensor_data,
+            low_latency_sensor_qos,
         )
         node.create_subscription(
             CameraInfo,
             self.aurora_depth_info_topic,
             lambda message: self._on_camera_info("aurora_depth", message),
-            qos_profile_sensor_data,
+            low_latency_sensor_qos,
         )
         self._rclpy = rclpy
         self._ros_node = node

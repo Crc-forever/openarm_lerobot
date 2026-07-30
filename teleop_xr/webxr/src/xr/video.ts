@@ -120,6 +120,31 @@ export class VideoClient {
 				}
 			};
 			this.pc.ontrack = (event) => {
+				// PICO Browser is Chromium-based. Ask its WebRTC receiver to
+				// favor the newest frame over smooth playback of queued frames.
+				// Keep the older Chromium name as a compatibility fallback.
+				const lowLatencyReceiver = event.receiver as unknown as
+					| Record<string, unknown>
+					| undefined;
+				try {
+					if (
+						lowLatencyReceiver &&
+						"jitterBufferTarget" in lowLatencyReceiver
+					) {
+						lowLatencyReceiver.jitterBufferTarget = 0;
+					} else if (
+						lowLatencyReceiver &&
+						"playoutDelayHint" in lowLatencyReceiver
+					) {
+						lowLatencyReceiver.playoutDelayHint = 0;
+					}
+				} catch (error) {
+					console.warn(
+						"[VideoClient] Browser rejected low-latency playout hint:",
+						error,
+					);
+				}
+
 				console.log(
 					"[VideoClient] ontrack event:",
 					"kind=",
