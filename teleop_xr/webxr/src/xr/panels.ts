@@ -36,6 +36,7 @@ import {
 	isControllerButtonPressed,
 	resolveControllerSpace,
 } from "./input_compat";
+import { faceViewerUpright } from "./panel_facing_logic";
 import { shouldBeginYDrag, shouldEndYDrag } from "./panel_y_drag_logic";
 
 type MaterialWithMap = Material & {
@@ -75,6 +76,9 @@ export class DraggablePanel {
 	public panelEntity: Entity;
 	private dragSurfaceGeometry: PlaneGeometry | null = null;
 	private dragSurfaceMaterial: MeshBasicMaterial | null = null;
+	private viewerPosition = new Vector3();
+	private panelWorldPosition = new Vector3();
+	private lookAtTarget = new Vector3();
 
 	constructor(
 		protected world: World,
@@ -177,7 +181,13 @@ export class DraggablePanel {
 		if (this.entity.object3D) {
 			const head = this.world.camera;
 			if (head) {
-				this.entity.object3D.lookAt(head.position);
+				head.getWorldPosition(this.viewerPosition);
+				faceViewerUpright(
+					this.entity.object3D,
+					this.viewerPosition,
+					this.panelWorldPosition,
+					this.lookAtTarget,
+				);
 			}
 		}
 	}
@@ -515,6 +525,8 @@ export class YButtonPanelDragSystem extends createSystem({}) {
 	private dragOffset = new Vector3();
 	private targetPosition = new Vector3();
 	private viewerPosition = new Vector3();
+	private panelWorldPosition = new Vector3();
+	private lookAtTarget = new Vector3();
 	private activeEntity: Entity | null = null;
 	private dragDistance = 0;
 	private previousYPressed = false;
@@ -673,7 +685,12 @@ export class YButtonPanelDragSystem extends createSystem({}) {
 			const viewer = this.world.player?.head ?? this.world.camera;
 			if (viewer) {
 				viewer.getWorldPosition(this.viewerPosition);
-				object.lookAt(this.viewerPosition);
+				faceViewerUpright(
+					object,
+					this.viewerPosition,
+					this.panelWorldPosition,
+					this.lookAtTarget,
+				);
 			}
 		}
 
