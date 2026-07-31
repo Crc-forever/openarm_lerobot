@@ -14,14 +14,18 @@
 
 joint1:
   limit:
-    lower: -1.396263
-    upper: 3.490659
+    # Bimanual mounting offsets turn this into a usable +/-90 deg range at
+    # the motor output; the project hardware clamp remains the final boundary.
+    lower: -1.570796
+    upper: 3.665191
     velocity: 16.754666
     effort: 40
 
 joint2:
   limit:
-    lower: -1.745329
+    # After the bimanual +/-90 deg offset this gives symmetric 45 deg overhead
+    # reach in the IK model, matching the project motor clamps.
+    lower: -2.356194
     upper: 1.745329
     velocity: 16.754666
     effort: 40

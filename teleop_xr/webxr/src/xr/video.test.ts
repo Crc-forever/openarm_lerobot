@@ -30,6 +30,10 @@ class MockWebSocket {
 		this.sent.push(payload);
 	}
 
+	close() {
+		this.readyState = MockWebSocket.CLOSED;
+	}
+
 	emitOpen() {
 		this.readyState = MockWebSocket.OPEN;
 		this.onopen?.({} as Event);
@@ -72,6 +76,10 @@ class MockPeerConnection {
 
 	async getStats(): Promise<RTCStatsReport> {
 		return new Map() as RTCStatsReport;
+	}
+
+	getReceivers(): RTCRtpReceiver[] {
+		return [];
 	}
 
 	close() {
@@ -144,6 +152,22 @@ describe("VideoClient", () => {
 			"control_check",
 			"video_request",
 		]);
+	});
+
+	it("does not reconnect after disposal", () => {
+		const client = new VideoClient(
+			"wss://example.test/ws",
+			vi.fn(),
+			vi.fn(),
+		);
+
+		const socket = MockWebSocket.instances[0];
+		socket.emitOpen();
+		client.dispose();
+		vi.advanceTimersByTime(30000);
+
+		expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+		expect(MockWebSocket.instances).toHaveLength(1);
 	});
 
 	it("resets per-offer track indexes after reconnecting", async () => {

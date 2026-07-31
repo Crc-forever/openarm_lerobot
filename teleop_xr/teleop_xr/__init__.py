@@ -255,6 +255,7 @@ class Teleop:
         self.__video_streams: list[VideoStreamConfig] = []
         self.__video_sources: dict[str, VideoSource] = video_sources or {}
         self.__video_sessions: dict[WebSocket, VideoStreamManager] = {}
+        self.__video_lock = asyncio.Lock()
 
         self.robot_vis: Optional[RobotVisModule] = None
         if self.__settings.robot_vis:
@@ -658,6 +659,8 @@ class Teleop:
 
             async def check_or_claim_control(
                 claimed_client_id: str,
+                *,
+                controller_websocket: bool = False,
             ) -> tuple[bool, Optional[str]]:
                 expired_controller: Optional[str] = None
                 newly_claimed: Optional[str] = None
@@ -679,7 +682,8 @@ class Teleop:
 
                     in_control = self.__controller_client_id == claimed_client_id
                     if in_control:
-                        self.__controller_ws = websocket
+                        if controller_websocket:
+                            self.__controller_ws = websocket
                         self.__controller_last_seen_s = now
 
                     controller_id = self.__controller_client_id
@@ -763,7 +767,10 @@ class Teleop:
                             )
                             continue
 
-                        allowed, controller_id = await check_or_claim_control(client_id)
+                        allowed, controller_id = await check_or_claim_control(
+                            client_id,
+                            controller_websocket=True,
+                        )
                         if not allowed:
                             await websocket.send_text(
                                 json.dumps(
@@ -811,7 +818,16 @@ class Teleop:
                             )
                             continue
 
-                        await self._handle_video_message(websocket, message)
+                        if msg_type == "video_request":
+                            # A browser may briefly retain an older WebRTC
+                            # signaling socket across XR re-entry. Keep exactly
+                            # one encoder/session for a physical client so stale
+                            # pages cannot multiply the outgoing video load.
+                            async with self.__video_lock:
+                                await close_video_sessions_for_client_id(client_id)
+                                await self._handle_video_message(websocket, message)
+                        else:
+                            await self._handle_video_message(websocket, message)
                         continue
 
                     if msg_type == "console_log":

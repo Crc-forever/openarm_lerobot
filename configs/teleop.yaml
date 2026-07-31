@@ -37,6 +37,31 @@ lerobot:
   robot_type: bi_openarm_follower
   joint_input_unit: radians
   action_unit: degrees
+  # Project-owned absolute motor limits. LeRobot's built-in OpenArm defaults
+  # restrict J1 to +/-75 deg and the overhead direction of J2 to only 9 deg,
+  # which prevents the IK target from lifting the arms high enough. Keep the
+  # remaining joints at the proven defaults while moderately expanding J1 and
+  # the overhead side of J2. The mirrored J2 overhead boundary is 45 deg;
+  # keep the opposite direction at the previously validated 90 deg.
+  joint_limits_deg:
+    left:
+      joint_1: [-90.0, 90.0]
+      joint_2: [-90.0, 45.0]
+      joint_3: [-85.0, 85.0]
+      joint_4: [0.0, 135.0]
+      joint_5: [-85.0, 85.0]
+      joint_6: [-40.0, 40.0]
+      joint_7: [-80.0, 80.0]
+      gripper: [-65.0, 0.0]
+    right:
+      joint_1: [-90.0, 90.0]
+      joint_2: [-45.0, 90.0]
+      joint_3: [-85.0, 85.0]
+      joint_4: [0.0, 135.0]
+      joint_5: [-85.0, 85.0]
+      joint_6: [-40.0, 40.0]
+      joint_7: [-80.0, 80.0]
+      gripper: [-65.0, 0.0]
   gripper_open_deg: -60.0
   # Read-only CAN feedback at the mechanically closed position is ~0 deg
   # on both grippers, matching LeRobot's upper joint boundary.
@@ -50,7 +75,7 @@ lerobot:
     # Never let a delayed Python iteration turn into one large motion step.
     max_dt_s: 0.02
     # Disable both arms if active Pico actions or motor feedback stop.
-    input_timeout_s: 0.25
+    input_timeout_s: 0.75
     feedback_timeout_s: 0.25
     # Once empty-close feedback reaches the calibrated hard stop, reduce only
     # the gripper's position stiffness to avoid buzzing against the boundary.

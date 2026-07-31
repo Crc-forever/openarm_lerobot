@@ -86,7 +86,7 @@ export class RobotModelSystem extends createSystem({}) {
 		let lastDistanceGrab =
 			useAppStore.getState().robotSettings.distanceGrabEnabled;
 
-		useAppStore.subscribe((state) => {
+		const unsubscribe = useAppStore.subscribe((state) => {
 			if (state.robotSettings.robotVisible !== lastRobotVisible) {
 				lastRobotVisible = state.robotSettings.robotVisible;
 				if (this.robotEntity?.object3D) {
@@ -133,6 +133,7 @@ export class RobotModelSystem extends createSystem({}) {
 				}
 			}
 		});
+		this.cleanupFuncs.push(unsubscribe);
 	}
 
 	async onRobotConfig(data: {

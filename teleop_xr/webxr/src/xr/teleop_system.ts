@@ -44,18 +44,22 @@ export class TeleopSystem extends createSystem({}) {
 	private reconnectTimer: number | null = null;
 	private reconnectAttempt = 0;
 	private loggedControllerSignatures = new Set<string>();
+	private disposed = false;
 
 	init() {
 		this.connectWS();
 
-		useAppStore.subscribe((state) => {
+		const unsubscribe = useAppStore.subscribe((state) => {
 			this.updateInterval = 1 / state.advancedSettings.updateRate;
 		});
+		this.cleanupFuncs.push(unsubscribe, () => this.disposeConnection());
 		this.updateInterval =
 			1 / useAppStore.getState().advancedSettings.updateRate;
 	}
 
 	connectWS() {
+		if (this.disposed) return;
+
 		useAppStore.getState().setConnectionStatus("connecting");
 		this.setLifecycle(
 			this.reconnectAttempt > 0 ? "reconnecting" : "connecting",
@@ -63,28 +67,37 @@ export class TeleopSystem extends createSystem({}) {
 		const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 		const wsUrl = `${protocol}//${window.location.host}/ws`;
 
-		this.ws = new WebSocket(wsUrl);
+		const ws = new WebSocket(wsUrl);
+		this.ws = ws;
 
-		this.ws.onopen = () => {
+		ws.onopen = () => {
+			if (this.disposed || this.ws !== ws) {
+				ws.close();
+				return;
+			}
 			this.reconnectAttempt = 0;
 			this.clearReconnectTimer();
 			this.updateStatus(true);
 			this.setLifecycle("connected");
 		};
 
-		this.ws.onclose = () => {
+		ws.onclose = () => {
+			if (this.ws === ws) {
+				this.ws = null;
+			}
+			if (this.disposed) return;
 			this.updateStatus(false);
 			this.setLifecycle("reconnecting");
 			useAppStore.getState().setTeleopEngaged(false);
 			this.scheduleReconnect();
 		};
 
-		this.ws.onerror = (error) => {
+		ws.onerror = (error) => {
 			console.error("WS Error", error);
 			this.setLifecycle("error");
 		};
 
-		this.ws.onmessage = (event) => {
+		ws.onmessage = (event) => {
 			try {
 				const message = JSON.parse(event.data);
 				if (message.type === "config") {
@@ -133,7 +146,7 @@ export class TeleopSystem extends createSystem({}) {
 	}
 
 	private scheduleReconnect() {
-		if (this.reconnectTimer !== null) {
+		if (this.disposed || this.reconnectTimer !== null) {
 			return;
 		}
 
@@ -142,7 +155,9 @@ export class TeleopSystem extends createSystem({}) {
 
 		this.reconnectTimer = window.setTimeout(() => {
 			this.reconnectTimer = null;
-			this.connectWS();
+			if (!this.disposed) {
+				this.connectWS();
+			}
 		}, delayMs);
 	}
 
@@ -152,6 +167,28 @@ export class TeleopSystem extends createSystem({}) {
 		}
 		window.clearTimeout(this.reconnectTimer);
 		this.reconnectTimer = null;
+	}
+
+	private disposeConnection() {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.clearReconnectTimer();
+		useAppStore.getState().setTeleopEngaged(false);
+
+		const ws = this.ws;
+		this.ws = null;
+		if (ws) {
+			ws.onopen = null;
+			ws.onmessage = null;
+			ws.onerror = null;
+			ws.onclose = null;
+			if (
+				ws.readyState === WebSocket.OPEN ||
+				ws.readyState === WebSocket.CONNECTING
+			) {
+				ws.close();
+			}
+		}
 	}
 
 	private setLifecycle(lifecycle: TeleopLifecycle) {

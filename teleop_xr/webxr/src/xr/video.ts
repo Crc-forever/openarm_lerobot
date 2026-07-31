@@ -22,6 +22,7 @@ export class VideoClient {
 	private waitingForOffer = false;
 	private reconnectTimer: number | null = null;
 	private reconnectAttempt = 0;
+	private disposed = false;
 
 	constructor(
 		private url: string,
@@ -36,9 +37,16 @@ export class VideoClient {
 	}
 
 	private connectWebSocket() {
-		this.ws = new WebSocket(this.url);
-		this.ws.onmessage = (event) => this.handleMessage(JSON.parse(event.data));
-		this.ws.onopen = () => {
+		if (this.disposed) return;
+
+		const ws = new WebSocket(this.url);
+		this.ws = ws;
+		ws.onmessage = (event) => this.handleMessage(JSON.parse(event.data));
+		ws.onopen = () => {
+			if (this.disposed || this.ws !== ws) {
+				ws.close();
+				return;
+			}
 			console.log(`[VideoClient] WebSocket connected. URL: ${this.url}`);
 			this.reconnectAttempt = 0;
 			this.clearReconnectTimer();
@@ -46,17 +54,22 @@ export class VideoClient {
 			this.sendControlCheck();
 			this.startControlPolling();
 		};
-		this.ws.onerror = (err) => {
+		ws.onerror = (err) => {
 			console.error("[VideoClient] WebSocket error:", err);
 		};
-		this.ws.onclose = (event) => {
+		ws.onclose = (event) => {
+			if (this.ws === ws) {
+				this.ws = null;
+			}
 			console.warn(
 				`[VideoClient] WebSocket closed: ${event.code} ${event.reason}`,
 			);
 			this.waitingForOffer = false;
 			this.closePeerConnection();
 			this.stopControlPolling();
-			this.scheduleReconnect();
+			if (!this.disposed) {
+				this.scheduleReconnect();
+			}
 		};
 	}
 
@@ -248,19 +261,22 @@ export class VideoClient {
 		);
 	}
 
-	private closePeerConnection() {
+	public closePeerConnection() {
 		if (this.statsTimer !== null) {
 			window.clearInterval(this.statsTimer);
 			this.statsTimer = null;
 		}
 		if (this.pc) {
+			for (const receiver of this.pc.getReceivers()) {
+				receiver.track?.stop();
+			}
 			this.pc.close();
 			this.pc = null;
 		}
 	}
 
 	private scheduleReconnect() {
-		if (this.reconnectTimer !== null) {
+		if (this.disposed || this.reconnectTimer !== null) {
 			return;
 		}
 
@@ -269,7 +285,9 @@ export class VideoClient {
 
 		this.reconnectTimer = window.setTimeout(() => {
 			this.reconnectTimer = null;
-			this.connectWebSocket();
+			if (!this.disposed) {
+				this.connectWebSocket();
+			}
 		}, delayMs);
 	}
 
@@ -279,6 +297,30 @@ export class VideoClient {
 		}
 		window.clearTimeout(this.reconnectTimer);
 		this.reconnectTimer = null;
+	}
+
+	public dispose() {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.waitingForOffer = false;
+		this.clearReconnectTimer();
+		this.stopControlPolling();
+		this.closePeerConnection();
+
+		const ws = this.ws;
+		this.ws = null;
+		if (ws) {
+			ws.onopen = null;
+			ws.onmessage = null;
+			ws.onerror = null;
+			ws.onclose = null;
+			if (
+				ws.readyState === WebSocket.OPEN ||
+				ws.readyState === WebSocket.CONNECTING
+			) {
+				ws.close();
+			}
+		}
 	}
 
 	private startStats() {

@@ -22,6 +22,7 @@ from teleop_xr.openarm_safety import (
     load_gripper_contact_hold,
     load_gripper_input_range,
     load_gripper_positions,
+    load_joint_position_limits,
     load_pt2_trajectory_settings,
 )
 
@@ -105,6 +106,9 @@ class LeRobotOpenArmOutput:
         )
         self.control_config_path = Path(
             control_config_path or default_control_config
+        )
+        self._joint_position_limits = load_joint_position_limits(
+            self.control_config_path
         )
         configured_open_deg, configured_closed_deg = load_gripper_positions(
             self.control_config_path
@@ -231,6 +235,16 @@ class LeRobotOpenArmOutput:
             ),
         )
         self._robot = BiOpenArmFollower(config)
+        # OpenArmFollower replaces custom limits with LeRobot's conservative
+        # side defaults during construction. Apply the validated project limits
+        # afterwards so both the absolute clamp below and any driver call use
+        # the same ranges.
+        self._robot.left_arm.config.joint_limits = dict(
+            self._joint_position_limits["left"]
+        )
+        self._robot.right_arm.config.joint_limits = dict(
+            self._joint_position_limits["right"]
+        )
         try:
             self._connect_without_calibration_or_enable()
             if self.record:

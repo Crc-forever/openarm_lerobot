@@ -140,6 +140,7 @@ export const initWorld = async (container: HTMLElement) => {
 		index: number;
 	}> = [];
 	let configReceived = false;
+	let pendingTracksTimer: number | null = null;
 
 	const getFallbackOrder = (): string[] => {
 		const config = getCameraViewsConfig();
@@ -220,7 +221,7 @@ export const initWorld = async (container: HTMLElement) => {
 		pendingTracks.length = 0;
 	};
 
-	onCameraViewsChanged((config) => {
+	const unsubscribeCameraViews = onCameraViewsChanged((config) => {
 		try {
 			if (leftControllerPanel.entity.object3D) {
 				leftControllerPanel.entity.object3D.visible =
@@ -303,7 +304,13 @@ export const initWorld = async (container: HTMLElement) => {
 
 			if (allKeys.length > 0 && !configReceived) {
 				configReceived = true;
-				setTimeout(() => processPendingTracks(), 50);
+				if (pendingTracksTimer !== null) {
+					window.clearTimeout(pendingTracksTimer);
+				}
+				pendingTracksTimer = window.setTimeout(() => {
+					pendingTracksTimer = null;
+					processPendingTracks();
+				}, 50);
 			}
 		} catch (err) {
 			console.error("[Video] Error in onCameraViewsChanged handler:", err);
@@ -315,7 +322,7 @@ export const initWorld = async (container: HTMLElement) => {
 		}
 	});
 
-	onCameraConfigChanged((_config) => {
+	const unsubscribeCameraConfig = onCameraConfigChanged((_config) => {
 		if (leftControllerPanel.entity.object3D) {
 			leftControllerPanel.entity.object3D.visible =
 				isViewEnabled("wrist_left") && getCameraEnabled("wrist_left");
@@ -336,7 +343,6 @@ export const initWorld = async (container: HTMLElement) => {
 	const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 	const videoWsUrl = `${protocol}//${window.location.host}/ws`;
 
-	// Assign to a variable that can be cleaned up
 	const videoClient = new VideoClient(
 		videoWsUrl,
 		(_stats) => {},
@@ -353,10 +359,36 @@ export const initWorld = async (container: HTMLElement) => {
 			}
 		},
 	);
-
-	// Attach video client to world for cleanup
-	// biome-ignore lint/suspicious/noExplicitAny: Temporary attachment for cleanup
+	// biome-ignore lint/suspicious/noExplicitAny: Diagnostic compatibility.
 	(world as any)._videoClient = videoClient;
+
+	// biome-ignore lint/suspicious/noExplicitAny: World does not expose app cleanup hooks.
+	(world as any)._openarmCleanup = () => {
+		if (pendingTracksTimer !== null) {
+			window.clearTimeout(pendingTracksTimer);
+			pendingTracksTimer = null;
+		}
+		unsubscribeCameraViews();
+		unsubscribeCameraConfig();
+		videoClient.dispose();
+
+		for (const [key, panel] of cameraPanels.entries()) {
+			panel.dispose();
+			if (GlobalRefs.cameraPanels.get(key) === panel) {
+				GlobalRefs.cameraPanels.delete(key);
+			}
+		}
+		cameraPanels.clear();
+		leftControllerPanel.dispose();
+		rightControllerPanel.dispose();
+		if (GlobalRefs.leftWristPanel === leftControllerPanel) {
+			GlobalRefs.leftWristPanel = null;
+		}
+		if (GlobalRefs.rightWristPanel === rightControllerPanel) {
+			GlobalRefs.rightWristPanel = null;
+		}
+		pendingTracks.length = 0;
+	};
 
 	world.registerSystem(PanelSystem);
 	world.registerSystem(TeleopSystem);

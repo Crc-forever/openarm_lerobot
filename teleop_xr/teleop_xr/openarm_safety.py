@@ -24,6 +24,54 @@ class PT2TrajectoryGain:
     kd: float
 
 
+def load_joint_position_limits(
+    config_path: str | Path,
+) -> dict[str, dict[str, tuple[float, float]]]:
+    """Load and validate project-owned absolute motor position limits."""
+    path = Path(config_path)
+    document: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
+    configured = document["lerobot"]["joint_limits_deg"]
+    expected_sides = {"left", "right"}
+    expected_motors = {
+        *(f"joint_{index}" for index in range(1, 8)),
+        "gripper",
+    }
+    if set(configured) != expected_sides:
+        raise ValueError(
+            f"{path}: joint_limits_deg must contain exactly "
+            f"{sorted(expected_sides)}"
+        )
+
+    limits: dict[str, dict[str, tuple[float, float]]] = {}
+    for side in sorted(expected_sides):
+        side_config = configured[side]
+        if set(side_config) != expected_motors:
+            raise ValueError(
+                f"{path}: joint_limits_deg.{side} must contain exactly "
+                f"{sorted(expected_motors)}"
+            )
+        side_limits: dict[str, tuple[float, float]] = {}
+        for motor, bounds in side_config.items():
+            if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+                raise ValueError(
+                    f"{path}: joint_limits_deg.{side}.{motor} must be "
+                    "[lower, upper]"
+                )
+            lower, upper = (float(bounds[0]), float(bounds[1]))
+            if not math.isfinite(lower) or not math.isfinite(upper):
+                raise ValueError(
+                    f"{path}: joint_limits_deg.{side}.{motor} must be finite"
+                )
+            if lower >= upper:
+                raise ValueError(
+                    f"{path}: joint_limits_deg.{side}.{motor} requires "
+                    "lower < upper"
+                )
+            side_limits[motor] = (lower, upper)
+        limits[side] = side_limits
+    return limits
+
+
 def load_control_limits(
     config_path: str | Path,
 ) -> tuple[dict[str, MotorControlLimit], float]:

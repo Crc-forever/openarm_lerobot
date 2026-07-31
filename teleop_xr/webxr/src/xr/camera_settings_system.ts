@@ -5,11 +5,12 @@ import { GlobalRefs } from "./global_refs";
 export class CameraSettingsSystem extends createSystem({}) {
 	init() {
 		this.updatePanelVisibility(useAppStore.getState().cameraConfig);
-		useAppStore.subscribe((state, prevState) => {
+		const unsubscribe = useAppStore.subscribe((state, prevState) => {
 			if (state.cameraConfig !== prevState?.cameraConfig) {
 				this.updatePanelVisibility(state.cameraConfig);
 			}
 		});
+		this.cleanupFuncs.push(unsubscribe);
 	}
 
 	private updatePanelVisibility(cameraConfig: CameraConfig) {

@@ -9,6 +9,9 @@ import { useAppStore } from "../lib/store";
 let ws: WebSocket | null = null;
 let messageQueue: string[] = [];
 let currentLogLevel: "info" | "warn" | "error" = "info";
+let initialized = false;
+let disposed = false;
+let reconnectTimer: number | null = null;
 
 const LOG_LEVEL_PRIORITY: Record<string, number> = {
 	log: 0,
@@ -58,34 +61,76 @@ function sendLog(level: string, args: any[]) {
 	}
 }
 
-export function initConsoleStream() {
-	useAppStore.subscribe((state) => {
-		currentLogLevel = state.advancedSettings.logLevel;
-	});
-	currentLogLevel = useAppStore.getState().advancedSettings.logLevel;
-
+function connectConsoleStream() {
+	if (disposed || ws) return;
 	const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 	const wsUrl = `${protocol}//${window.location.host}/ws`;
 
-	ws = new WebSocket(wsUrl);
+	const socket = new WebSocket(wsUrl);
+	ws = socket;
 
-	ws.onopen = () => {
+	socket.onopen = () => {
+		if (disposed || ws !== socket) {
+			socket.close();
+			return;
+		}
 		// Flush queued messages
 		for (const msg of messageQueue) {
-			ws?.send(msg);
+			socket.send(msg);
 		}
 		messageQueue = [];
 		originalConsole.log("[ConsoleStream] Connected");
 	};
 
-	ws.onclose = () => {
+	socket.onclose = () => {
+		if (ws === socket) {
+			ws = null;
+		}
+		if (disposed) return;
 		originalConsole.warn("[ConsoleStream] Disconnected, reconnecting...");
-		setTimeout(initConsoleStream, 3000);
+		if (reconnectTimer === null) {
+			reconnectTimer = window.setTimeout(() => {
+				reconnectTimer = null;
+				connectConsoleStream();
+			}, 3000);
+		}
 	};
 
-	ws.onerror = (e) => {
+	socket.onerror = (e) => {
 		originalConsole.error("[ConsoleStream] Error", e);
 	};
+}
+
+function shutdownConsoleStream() {
+	disposed = true;
+	if (reconnectTimer !== null) {
+		window.clearTimeout(reconnectTimer);
+		reconnectTimer = null;
+	}
+	const socket = ws;
+	ws = null;
+	if (socket) {
+		socket.onopen = null;
+		socket.onclose = null;
+		socket.onerror = null;
+		if (
+			socket.readyState === WebSocket.OPEN ||
+			socket.readyState === WebSocket.CONNECTING
+		) {
+			socket.close();
+		}
+	}
+}
+
+export function initConsoleStream() {
+	if (initialized) return;
+	initialized = true;
+	disposed = false;
+
+	useAppStore.subscribe((state) => {
+		currentLogLevel = state.advancedSettings.logLevel;
+	});
+	currentLogLevel = useAppStore.getState().advancedSettings.logLevel;
 
 	// Intercept console methods
 	// biome-ignore lint/suspicious/noExplicitAny: Console methods accept any arguments
@@ -111,4 +156,7 @@ export function initConsoleStream() {
 		originalConsole.info(...args);
 		sendLog("info", args);
 	};
+
+	window.addEventListener("pagehide", shutdownConsoleStream, { once: true });
+	connectConsoleStream();
 }

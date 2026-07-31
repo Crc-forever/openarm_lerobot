@@ -343,6 +343,25 @@ export class ControllerCameraPanel {
 		return this._hasVideoTrack;
 	}
 
+	dispose() {
+		this.clearVideoTrack();
+		if (this.entity.object3D) {
+			for (const child of [...this.entity.object3D.children]) {
+				if (child instanceof Mesh) {
+					child.geometry.dispose();
+					if (Array.isArray(child.material)) {
+						child.material.forEach((material) => material.dispose());
+					} else {
+						child.material.dispose();
+					}
+				}
+			}
+		}
+		if (typeof this.entity.destroy === "function") {
+			this.entity.destroy();
+		}
+	}
+
 	setVideoTrack(track: MediaStreamTrack) {
 		this.clearVideoTrack();
 

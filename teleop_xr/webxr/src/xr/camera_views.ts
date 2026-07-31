@@ -5,7 +5,7 @@ export type CameraView = {
 export type CameraViewsConfig = Record<string, CameraView>;
 
 let currentConfig: CameraViewsConfig = {};
-const handlers: ((config: CameraViewsConfig) => void)[] = [];
+const handlers = new Set<(config: CameraViewsConfig) => void>();
 
 export function setCameraViewsConfig(config: CameraViewsConfig | null): void {
 	currentConfig = config || {};
@@ -13,16 +13,18 @@ export function setCameraViewsConfig(config: CameraViewsConfig | null): void {
 		"[CameraViews] setCameraViewsConfig called, keys:",
 		Object.keys(currentConfig),
 		"handlers:",
-		handlers.length,
+		handlers.size,
 	);
-	handlers.forEach((h, i) => {
-		console.log("[CameraViews] Calling handler", i);
+	let index = 0;
+	handlers.forEach((handler) => {
+		console.log("[CameraViews] Calling handler", index);
 		try {
-			h(currentConfig);
-			console.log("[CameraViews] Handler", i, "completed");
+			handler(currentConfig);
+			console.log("[CameraViews] Handler", index, "completed");
 		} catch (e) {
-			console.error("[CameraViews] Handler", i, "threw error:", e);
+			console.error("[CameraViews] Handler", index, "threw error:", e);
 		}
+		index += 1;
 	});
 	console.log("[CameraViews] All handlers completed");
 }
@@ -37,8 +39,11 @@ export function isViewEnabled(key: string): boolean {
 
 export function onCameraViewsChanged(
 	handler: (config: CameraViewsConfig) => void,
-): void {
-	handlers.push(handler);
-	console.log("[CameraViews] Handler added, total handlers:", handlers.length);
+): () => void {
+	handlers.add(handler);
+	console.log("[CameraViews] Handler added, total handlers:", handlers.size);
 	handler(currentConfig);
+	return () => {
+		handlers.delete(handler);
+	};
 }
