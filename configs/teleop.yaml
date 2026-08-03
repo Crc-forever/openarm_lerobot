@@ -54,8 +54,11 @@ lerobot:
       joint_2: [-90.0, 45.0]
       joint_3: [-85.0, 85.0]
       joint_4: [0.0, 135.0]
-      joint_5: [-85.0, 85.0]
-      joint_6: [-40.0, 40.0]
+      # Match the URDF mechanical envelope. The measured fully-overhead pose
+      # needs J5=-80.925 and J6=-39.004 deg, so the former conservative clamps
+      # left too little control margin to reach and hold that pose.
+      joint_5: [-90.0, 90.0]
+      joint_6: [-45.0, 45.0]
       joint_7: [-80.0, 80.0]
       gripper: [-65.0, 0.0]
     right:
@@ -63,8 +66,8 @@ lerobot:
       joint_2: [-45.0, 90.0]
       joint_3: [-85.0, 85.0]
       joint_4: [0.0, 135.0]
-      joint_5: [-85.0, 85.0]
-      joint_6: [-40.0, 40.0]
+      joint_5: [-90.0, 90.0]
+      joint_6: [-45.0, 45.0]
       joint_7: [-80.0, 80.0]
       gripper: [-65.0, 0.0]
   gripper_open_deg: -60.0

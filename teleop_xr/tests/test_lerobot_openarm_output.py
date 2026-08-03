@@ -14,7 +14,7 @@ class LeRobotOpenArmOutputInterfaceTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.output.close()
 
-    def test_project_joint_limits_expand_j1_and_overhead_j2(self) -> None:
+    def test_project_joint_limits_support_measured_overhead_pose(self) -> None:
         config_path = Path(__file__).resolve().parents[2] / "configs" / "teleop.yaml"
 
         limits = load_joint_position_limits(config_path)
@@ -23,6 +23,40 @@ class LeRobotOpenArmOutputInterfaceTest(unittest.TestCase):
         self.assertEqual(limits["right"]["joint_1"], (-90.0, 90.0))
         self.assertEqual(limits["left"]["joint_2"], (-90.0, 45.0))
         self.assertEqual(limits["right"]["joint_2"], (-45.0, 90.0))
+        self.assertEqual(limits["left"]["joint_5"], (-90.0, 90.0))
+        self.assertEqual(limits["right"]["joint_5"], (-90.0, 90.0))
+        self.assertEqual(limits["left"]["joint_6"], (-45.0, 45.0))
+        self.assertEqual(limits["right"]["joint_6"], (-45.0, 45.0))
+
+        # Median of three read-only CAN samples with both arms manually placed
+        # in the demonstrated fully-overhead posture on 2026-08-03. Keep every
+        # arm joint at least five degrees inside the software clamp so the
+        # trajectory controller can reach and hold the pose without clipping.
+        measured_overhead_pose = {
+            "left": {
+                "joint_1": -45.605,
+                "joint_2": -34.807,
+                "joint_3": -5.519,
+                "joint_4": 90.936,
+                "joint_5": -80.925,
+                "joint_6": -39.004,
+                "joint_7": -38.020,
+            },
+            "right": {
+                "joint_1": 81.865,
+                "joint_2": 9.191,
+                "joint_3": 2.437,
+                "joint_4": 88.313,
+                "joint_5": 22.611,
+                "joint_6": 0.863,
+                "joint_7": 12.032,
+            },
+        }
+        for side, joints in measured_overhead_pose.items():
+            for joint, position in joints.items():
+                lower, upper = limits[side][joint]
+                self.assertGreaterEqual(position, lower + 5.0)
+                self.assertLessEqual(position, upper - 5.0)
 
     def test_camera_capture_exposes_shared_capture_read_only(self) -> None:
         output = LeRobotOpenArmOutput.__new__(LeRobotOpenArmOutput)
