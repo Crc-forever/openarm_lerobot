@@ -28,10 +28,15 @@ controls:
     button_index: 0
     button_name: trigger
     value_field: value
-    # Map the analog trigger continuously to gripper position. Small endpoint
-    # dead zones guarantee a stable fully-open and fully-closed command.
+    # The first 85% of trigger travel controls position. The final 15% keeps
+    # the closed target and progressively adds a bounded closing torque so
+    # thin fabric can be held without commanding past the mechanical stop.
     input_min: 0.05
-    input_max: 0.95
+    input_max: 0.85
+    pressure_input_max: 1.0
+    # Conservative initial DM4310 torque feed-forward. Increase only after
+    # checking grip, motor temperature, and empty-close behavior on hardware.
+    max_closing_torque_nm: 0.30
 
 lerobot:
   robot_type: bi_openarm_follower

@@ -176,6 +176,29 @@ def load_gripper_input_range(config_path: str | Path) -> tuple[float, float]:
     return input_min, input_max
 
 
+def load_gripper_pressure(
+    config_path: str | Path,
+) -> tuple[float, float]:
+    """Load the trigger endpoint and torque limit for the pressure zone."""
+    path = Path(config_path)
+    document: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
+    gripper = document["controls"]["gripper"]
+    position_input_max = float(gripper["input_max"])
+    pressure_input_max = float(gripper["pressure_input_max"])
+    max_torque_nm = float(gripper["max_closing_torque_nm"])
+    if not position_input_max < pressure_input_max <= 1.0:
+        raise ValueError(
+            f"{path}: require gripper.input_max < "
+            "gripper.pressure_input_max <= 1"
+        )
+    if not math.isfinite(max_torque_nm) or max_torque_nm < 0.0:
+        raise ValueError(
+            f"{path}: gripper.max_closing_torque_nm must be finite "
+            "and non-negative"
+        )
+    return pressure_input_max, max_torque_nm
+
+
 def load_gripper_contact_hold(
     config_path: str | Path,
 ) -> tuple[float, float]:

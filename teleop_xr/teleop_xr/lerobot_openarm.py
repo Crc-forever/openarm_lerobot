@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from teleop_xr.openarm_safety import (
     load_control_timeouts,
     load_gripper_contact_hold,
     load_gripper_input_range,
+    load_gripper_pressure,
     load_gripper_positions,
     load_joint_position_limits,
     load_pt2_trajectory_settings,
@@ -54,6 +56,14 @@ _MOTOR_FAULT_STATUSES = {
     0xD: "communication loss",
     0xE: "overload",
 }
+
+
+@dataclass(frozen=True)
+class _QueuedAction:
+    """One standard LeRobot action plus non-recorded gripper force intent."""
+
+    positions: dict[str, float]
+    gripper_torques_nm: dict[str, float]
 
 
 class ArmPowerState(str, Enum):
@@ -146,6 +156,10 @@ class LeRobotOpenArmOutput:
             self.gripper_input_max,
         ) = load_gripper_input_range(self.control_config_path)
         (
+            self.gripper_pressure_input_max,
+            self.gripper_max_closing_torque_nm,
+        ) = load_gripper_pressure(self.control_config_path)
+        (
             self.gripper_contact_hold_kp,
             self.gripper_contact_window_deg,
         ) = load_gripper_contact_hold(self.control_config_path)
@@ -177,7 +191,7 @@ class LeRobotOpenArmOutput:
         self.last_sent_action: dict[str, float] | None = None
 
         self._robot: Any | None = None
-        self._actions: queue.Queue[dict[str, float] | object | None] = queue.Queue(
+        self._actions: queue.Queue[_QueuedAction | object | None] = queue.Queue(
             maxsize=1
         )
         self._worker: threading.Thread | None = None
@@ -397,7 +411,15 @@ class LeRobotOpenArmOutput:
                 raise RuntimeError("LeRobot output is closed")
             self._last_submit_time = time.monotonic()
             self._expecting_actions = True
-            self._put_latest(action)
+            self._put_latest(
+                _QueuedAction(
+                    positions=action,
+                    gripper_torques_nm={
+                        "left": self._gripper_torque(left_trigger),
+                        "right": self._gripper_torque(right_trigger),
+                    },
+                )
+            )
         return action
 
     def hold(self) -> None:
@@ -413,7 +435,7 @@ class LeRobotOpenArmOutput:
                 self._expecting_actions = False
                 self._put_latest(_HOLD_ACTION)
 
-    def _put_latest(self, item: dict[str, float] | object | None) -> None:
+    def _put_latest(self, item: _QueuedAction | object | None) -> None:
         try:
             self._actions.put_nowait(item)
         except queue.Full:
@@ -481,8 +503,24 @@ class LeRobotOpenArmOutput:
             self.gripper_closed_deg - self.gripper_open_deg
         )
 
+    def _gripper_torque(self, trigger: float) -> float:
+        """Map only the trigger's final zone to bounded closing torque."""
+        value = min(1.0, max(0.0, float(trigger)))
+        normalized = min(
+            1.0,
+            max(
+                0.0,
+                (value - self.gripper_input_max)
+                / (
+                    self.gripper_pressure_input_max
+                    - self.gripper_input_max
+                ),
+            ),
+        )
+        return normalized * self.gripper_max_closing_torque_nm
+
     def _send_loop(self) -> None:
-        latest_action: dict[str, float] | None = None
+        latest_action: _QueuedAction | None = None
         next_tick = time.monotonic()
         try:
             while not self._stop_event.is_set():
@@ -504,7 +542,15 @@ class LeRobotOpenArmOutput:
                             self._hardware_enabled
                             and self.last_sent_action is not None
                         ):
-                            latest_action = self._hold_last_position()
+                            latest_action = _QueuedAction(
+                                positions=self._hold_last_position(),
+                                # Releasing the deadman must also remove any
+                                # trigger-requested squeeze immediately.
+                                gripper_torques_nm={
+                                    "left": 0.0,
+                                    "right": 0.0,
+                                },
+                            )
                         else:
                             latest_action = None
                     else:
@@ -544,7 +590,10 @@ class LeRobotOpenArmOutput:
                 (
                     self.last_sent_action,
                     observation,
-                ) = self._send_smoothed_action(latest_action)
+                ) = self._send_smoothed_action(
+                    latest_action.positions,
+                    latest_action.gripper_torques_nm,
+                )
                 if (
                     observation is not None
                     and self._expecting_actions
@@ -1541,6 +1590,7 @@ class LeRobotOpenArmOutput:
     def _send_smoothed_action(
         self,
         action: dict[str, float],
+        gripper_torques_nm: dict[str, float] | None = None,
     ) -> tuple[dict[str, float], dict[str, float] | None]:
         """Run one 100 Hz PT2 trajectory tick and send without CAN read waits."""
         targets: dict[str, float] = {}
@@ -1561,6 +1611,7 @@ class LeRobotOpenArmOutput:
         control_time = time.monotonic()
         self._trajectory.update_targets(targets)
         positions, velocities, _ = self._trajectory.step(control_time)
+        gripper_torques_nm = gripper_torques_nm or {}
 
         sent: dict[str, float] = {}
         # Consume replies from the preceding tick. recv(timeout=0) ensures CAN
@@ -1590,7 +1641,11 @@ class LeRobotOpenArmOutput:
                     # Position trajectories already move the gripper. Avoid
                     # noisy derivative feed-forward at contact/fully closed.
                     0.0 if motor == "gripper" else velocities[name],
-                    0.0,
+                    (
+                        float(gripper_torques_nm.get(side, 0.0))
+                        if motor == "gripper"
+                        else 0.0
+                    ),
                 )
                 sent[f"{name}.pos"] = positions[name]
             self._send_mit_without_wait(arm.bus, commands)
