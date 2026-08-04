@@ -10,6 +10,9 @@ export type VideoStats = {
 		height: number;
 		packetsLost: number;
 		jitter: number;
+		jitterBufferMs: number;
+		decodeMs: number;
+		framesDropped: number;
 	}>;
 };
 
@@ -23,6 +26,10 @@ export class VideoClient {
 	private reconnectTimer: number | null = null;
 	private reconnectAttempt = 0;
 	private disposed = false;
+	private previousInboundStats = new Map<
+		string,
+		{ bytesReceived: number; timestamp: number }
+	>();
 
 	constructor(
 		private url: string,
@@ -273,6 +280,7 @@ export class VideoClient {
 			this.pc.close();
 			this.pc = null;
 		}
+		this.previousInboundStats.clear();
 	}
 
 	private scheduleReconnect() {
@@ -331,10 +339,24 @@ export class VideoClient {
 			const streams: VideoStats["streams"] = [];
 			report.forEach((stat) => {
 				if (stat.type === "inbound-rtp" && stat.kind === "video") {
+					const previous = this.previousInboundStats.get(stat.id);
+					const elapsedMs = previous ? stat.timestamp - previous.timestamp : 0;
+					const receivedBytes = previous
+						? stat.bytesReceived - previous.bytesReceived
+						: 0;
 					const bitrateKbps =
-						stat.bytesReceived && stat.timestamp
-							? Math.round((stat.bytesReceived * 8) / 1000)
-							: 0;
+						elapsedMs > 0 ? Math.round((receivedBytes * 8) / elapsedMs) : 0;
+					this.previousInboundStats.set(stat.id, {
+						bytesReceived: stat.bytesReceived || 0,
+						timestamp: stat.timestamp,
+					});
+					const extended = stat as RTCInboundRtpStreamStats & {
+						jitterBufferDelay?: number;
+						jitterBufferEmittedCount?: number;
+						totalDecodeTime?: number;
+						framesDecoded?: number;
+						framesDropped?: number;
+					};
 					streams.push({
 						id: stat.trackIdentifier || stat.ssrc?.toString() || "video",
 						fps: stat.framesPerSecond || 0,
@@ -343,6 +365,19 @@ export class VideoClient {
 						height: stat.frameHeight || 0,
 						packetsLost: stat.packetsLost || 0,
 						jitter: stat.jitter || 0,
+						jitterBufferMs: extended.jitterBufferEmittedCount
+							? Math.round(
+									(extended.jitterBufferDelay || 0) * 1000 /
+										extended.jitterBufferEmittedCount,
+								)
+							: 0,
+						decodeMs: extended.framesDecoded
+							? Math.round(
+									(extended.totalDecodeTime || 0) * 1000 /
+										extended.framesDecoded,
+								)
+							: 0,
+						framesDropped: extended.framesDropped || 0,
 					});
 				}
 			});

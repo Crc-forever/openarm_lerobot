@@ -18,8 +18,14 @@ import {
 	XIcon,
 } from "@pmndrs/uikit-lucide";
 import {
+	BackSide,
+	Color,
 	Euler,
+	Mesh,
+	MeshBasicMaterial,
+	SphereGeometry,
 } from "three";
+import type { XRBackgroundMode } from "@/app/page";
 import { getCameraEnabled, onCameraConfigChanged } from "./camera_config";
 import { CameraSettingsSystem } from "./camera_settings_system";
 import {
@@ -70,14 +76,19 @@ const placeRelative = (
 	obj.translateZ(z);
 };
 
-export const initWorld = async (container: HTMLElement) => {
+export const initWorld = async (
+	container: HTMLElement,
+	backgroundMode: XRBackgroundMode = "passthrough",
+) => {
 	initConsoleStream();
 
 	// Always initialize as AR. Keep the scene background unset so the PICO
 	// compositor can display the real-world camera feed behind virtual objects.
 	const initialMode = SessionMode.ImmersiveAR;
 
-	console.log(`[initWorld] Creating passthrough world: ${initialMode}`);
+	console.log(
+		`[initWorld] Creating ${backgroundMode} background world: ${initialMode}`,
+	);
 
 	const world = await World.create(container as HTMLDivElement, {
 		assets,
@@ -121,8 +132,32 @@ export const initWorld = async (container: HTMLElement) => {
 	});
 
 	const { camera } = world;
-
 	camera.position.set(0, 1, 0.5);
+
+	// PICO's immersive-ar compositor can keep passthrough visible even when a
+	// Three.js scene background color is set. Render an opaque inward-facing
+	// sphere as real XR geometry so black mode reliably covers the camera feed.
+	world.scene.background =
+		backgroundMode === "black" ? new Color(0x000000) : null;
+	const blackBackdrop =
+		backgroundMode === "black"
+			? new Mesh(
+					new SphereGeometry(50, 32, 16),
+					new MeshBasicMaterial({
+						color: 0x000000,
+						side: BackSide,
+						depthTest: false,
+						depthWrite: false,
+					}),
+				)
+			: null;
+	if (blackBackdrop) {
+		blackBackdrop.name = "openarm-black-xr-backdrop";
+		blackBackdrop.position.copy(camera.position);
+		blackBackdrop.renderOrder = -10000;
+		blackBackdrop.frustumCulled = false;
+		world.scene.add(blackBackdrop);
+	}
 
 	const cameraPanels = new Map<string, CameraPanel>();
 
@@ -345,7 +380,9 @@ export const initWorld = async (container: HTMLElement) => {
 
 	const videoClient = new VideoClient(
 		videoWsUrl,
-		(_stats) => {},
+		(stats) => {
+			console.info("[VideoStats]", JSON.stringify(stats));
+		},
 		(track, trackId, trackIndex) => {
 			console.log(
 				`[Video] New track received. ID: ${trackId}, Index: ${trackIndex}, ConfigReceived: ${configReceived}`,
@@ -364,6 +401,11 @@ export const initWorld = async (container: HTMLElement) => {
 
 	// biome-ignore lint/suspicious/noExplicitAny: World does not expose app cleanup hooks.
 	(world as any)._openarmCleanup = () => {
+		if (blackBackdrop) {
+			blackBackdrop.removeFromParent();
+			blackBackdrop.geometry.dispose();
+			blackBackdrop.material.dispose();
+		}
 		if (pendingTracksTimer !== null) {
 			window.clearTimeout(pendingTracksTimer);
 			pendingTracksTimer = null;

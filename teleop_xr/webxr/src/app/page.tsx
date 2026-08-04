@@ -1,6 +1,6 @@
 "use client";
 
-import { Glasses, X } from "lucide-react";
+import { Glasses, Moon, ScanEye, X } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useCallback, useState } from "react";
 import { RobotSettingsPanel } from "@/components/dashboard/RobotSettingsPanel";
@@ -12,26 +12,28 @@ const XRScene = dynamic(
 	{ ssr: false },
 );
 
-export type XRMode = "passthrough" | null;
+export type XRBackgroundMode = "passthrough" | "black";
 
 export default function Home() {
 	const [xrError, setXrError] = useState<string | null>(null);
-	const [selectedMode, setSelectedMode] = useState<XRMode>(null);
+	const [backgroundMode, setBackgroundMode] =
+		useState<XRBackgroundMode>("passthrough");
+	const [activeMode, setActiveMode] = useState<XRBackgroundMode | null>(null);
 
-	const handleEnterPassthrough = useCallback(() => {
+	const handleEnterXR = useCallback(() => {
 		setXrError(null);
-		setSelectedMode("passthrough");
-	}, []);
+		setActiveMode(backgroundMode);
+	}, [backgroundMode]);
 
 	const handleExit = useCallback(() => {
-		setSelectedMode(null);
+		setActiveMode(null);
 	}, []);
 
 	return (
 		<main className="min-h-screen bg-transparent p-8">
-			{selectedMode && (
+			{activeMode && (
 				<XRScene
-					mode={selectedMode}
+					backgroundMode={activeMode}
 					onError={(message) => setXrError(message)}
 					onExit={handleExit}
 				/>
@@ -45,16 +47,45 @@ export default function Home() {
 						<p className="text-muted-foreground">Pico MR 双臂控制界面</p>
 					</div>
 					<div className="flex items-center gap-3">
-						{selectedMode === null ? (
-							<Button
-								size="lg"
-								className="gap-2"
-								onClick={handleEnterPassthrough}
-								variant="default"
-							>
-								<Glasses className="h-4 w-4" />
-								MR 透视遥操作
-							</Button>
+						{activeMode === null ? (
+							<>
+								<div
+									className="flex items-center gap-1 rounded-lg border bg-background/80 p-1"
+									aria-label="WebXR 背景模式"
+								>
+									<Button
+										type="button"
+										size="sm"
+										variant={backgroundMode === "passthrough" ? "default" : "ghost"}
+										className="gap-2"
+										onClick={() => setBackgroundMode("passthrough")}
+										aria-pressed={backgroundMode === "passthrough"}
+									>
+										<ScanEye className="h-4 w-4" />
+										半透视背景
+									</Button>
+									<Button
+										type="button"
+										size="sm"
+										variant={backgroundMode === "black" ? "default" : "ghost"}
+										className="gap-2"
+										onClick={() => setBackgroundMode("black")}
+										aria-pressed={backgroundMode === "black"}
+									>
+										<Moon className="h-4 w-4" />
+										纯黑背景
+									</Button>
+								</div>
+								<Button
+									size="lg"
+									className="gap-2"
+									onClick={handleEnterXR}
+									variant="default"
+								>
+									<Glasses className="h-4 w-4" />
+									进入 WebXR
+								</Button>
+							</>
 						) : (
 							<Button
 								size="lg"

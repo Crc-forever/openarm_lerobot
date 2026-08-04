@@ -213,6 +213,7 @@ export class DraggablePanel {
 export class CameraPanel extends DraggablePanel {
 	private videoMesh: Mesh | null = null;
 	private videoElement: HTMLVideoElement | null = null;
+	private videoFrameCallbackId: number | null = null;
 	private _hasVideoTrack = false;
 
 	constructor(world: World) {
@@ -255,6 +256,7 @@ export class CameraPanel extends DraggablePanel {
 		this.videoElement.play().catch((e) => {
 			console.error(`Video play error: ${e}`);
 		});
+		this.startVideoFrameDiagnostics(this.videoElement, track.id);
 
 		const texture = new VideoTexture(this.videoElement);
 		// Aspect ratio adjusted to fit panel
@@ -275,6 +277,10 @@ export class CameraPanel extends DraggablePanel {
 
 	private clearVideoTrack() {
 		if (this.videoElement) {
+			if (this.videoFrameCallbackId !== null) {
+				this.videoElement.cancelVideoFrameCallback(this.videoFrameCallbackId);
+				this.videoFrameCallbackId = null;
+			}
 			this.videoElement.pause();
 			this.videoElement.srcObject = null;
 			this.videoElement.remove();
@@ -301,6 +307,42 @@ export class CameraPanel extends DraggablePanel {
 		}
 
 		this._hasVideoTrack = false;
+	}
+
+	private startVideoFrameDiagnostics(video: HTMLVideoElement, trackId: string) {
+		let lastLogTime = 0;
+		const onFrame = (now: number, metadata: VideoFrameCallbackMetadata) => {
+			const timing = metadata as VideoFrameCallbackMetadata & {
+				captureTime?: number;
+				receiveTime?: number;
+			};
+			if (now - lastLogTime >= 1000) {
+				lastLogTime = now;
+				console.info(
+					"[VideoFrameLatency]",
+					JSON.stringify({
+						trackId,
+						captureToDisplayMs:
+							timing.captureTime === undefined
+								? null
+								: Math.round(now - timing.captureTime),
+						receiveToDisplayMs:
+							timing.receiveTime === undefined
+								? null
+								: Math.round(now - timing.receiveTime),
+						processingMs: Math.round(
+							(metadata.processingDuration ?? 0) * 1000,
+						),
+						expectedDisplayDelayMs: Math.round(
+							metadata.expectedDisplayTime - now,
+						),
+						presentedFrames: metadata.presentedFrames,
+					}),
+				);
+			}
+			this.videoFrameCallbackId = video.requestVideoFrameCallback(onFrame);
+		};
+		this.videoFrameCallbackId = video.requestVideoFrameCallback(onFrame);
 	}
 }
 

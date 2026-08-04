@@ -2,18 +2,18 @@
 
 import { ReferenceSpaceType, SessionMode } from "@iwsdk/core";
 import { useCallback, useEffect, useRef } from "react";
-import type { XRMode } from "@/app/page";
+import type { XRBackgroundMode } from "@/app/page";
 import { initWorld } from "@/xr";
 
 type XRSceneProps = {
-	mode: XRMode;
+	backgroundMode: XRBackgroundMode;
 	onError?: (message: string) => void;
 	onExit?: () => void;
 };
 
 type XRWorld = Awaited<ReturnType<typeof initWorld>>;
 
-export function XRScene({ mode, onError, onExit }: XRSceneProps) {
+export function XRScene({ backgroundMode, onError, onExit }: XRSceneProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const worldRef = useRef<XRWorld | null>(null);
 	const sessionRef = useRef<XRSession | null>(null);
@@ -49,15 +49,17 @@ export function XRScene({ mode, onError, onExit }: XRSceneProps) {
 
 	useEffect(() => {
 		const container = containerRef.current;
-		if (!container || !mode) return;
+		if (!container) return;
 
 		let isMounted = true;
 
 		const setup = async () => {
 			try {
-				console.log(`[XRScene] Initializing passthrough world: ${mode}`);
+				console.log(
+					`[XRScene] Initializing world with ${backgroundMode} background`,
+				);
 
-				const world = await initWorld(container);
+				const world = await initWorld(container, backgroundMode);
 				if (!isMounted) {
 					cleanupWorld(world);
 					return;
@@ -135,7 +137,7 @@ export function XRScene({ mode, onError, onExit }: XRSceneProps) {
 				worldRef.current = null;
 			}
 		};
-	}, [mode, reportError, cleanupAndExit]);
+	}, [backgroundMode, reportError, cleanupAndExit]);
 
 	return (
 		<div className="fixed inset-0 z-0" data-testid="xr-scene">
