@@ -8,7 +8,7 @@ import json
 from typing import Callable, List, Optional, Dict, Any
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import transforms3d as t3d
@@ -25,6 +25,7 @@ from teleop_xr.video_stream import (
 from teleop_xr.camera_views import build_video_streams
 from teleop_xr.config import TeleopSettings
 from teleop_xr.robot_vis import RobotVisModule
+from teleop_xr.pico_stereo_bridge import PicoStereoBridge
 
 TF_RUB2FLU = np.array([[0, 0, -1, 0], [-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1]])
 TF_RUB2FLU_ROT = TF_RUB2FLU[:3, :3]
@@ -256,6 +257,9 @@ class Teleop:
         self.__video_sources: dict[str, VideoSource] = video_sources or {}
         self.__video_sessions: dict[WebSocket, VideoStreamManager] = {}
         self.__video_lock = asyncio.Lock()
+        self.__pico_stereo_bridge = PicoStereoBridge(
+            port=int(os.environ.get("PICO_STEREO_TCP_PORT", "8091"))
+        )
 
         self.robot_vis: Optional[RobotVisModule] = None
         if self.__settings.robot_vis:
@@ -267,6 +271,16 @@ class Teleop:
         # Configure logging
         logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
         self.__setup_routes()
+        self.__app.router.add_event_handler("shutdown", self._shutdown_video_sources)
+
+    def _shutdown_video_sources(self) -> None:
+        """Release persistent cameras after all WebRTC sessions are closed."""
+        self.__pico_stereo_bridge.stop()
+        for source in self.__video_sources.values():
+            try:
+                source.stop()
+            except Exception:
+                self.__logger.exception("Failed to stop video source during shutdown")
 
     @property
     def input_mode(self):
@@ -559,6 +573,87 @@ class Teleop:
                 headers={"Cache-Control": _frontend_cache_control("/")},
             )
 
+        @self.__app.get("/d455-depth-test")
+        async def d455_depth_test_page():
+            test_page = os.path.join(static_dir, "d455-depth-test.html")
+            if not os.path.isfile(test_page):
+                return JSONResponse(
+                    {"error": "D455 test frontend has not been built"},
+                    status_code=404,
+                )
+            return FileResponse(
+                test_page,
+                headers={"Cache-Control": _frontend_cache_control(test_page)},
+            )
+
+        @self.__app.get("/api/d455-depth-test/config")
+        async def d455_depth_test_config():
+            source = self.__video_sources.get("d455_stereo")
+            config_provider = getattr(source, "client_config", None)
+            if not callable(config_provider):
+                return JSONResponse(
+                    {"error": "Start TeleopXR with --d455-depth-test"},
+                    status_code=404,
+                )
+            return JSONResponse(config_provider())
+
+        @self.__app.get("/pico-ultra-stereo")
+        async def pico_ultra_stereo_page():
+            test_page = os.path.join(static_dir, "pico-ultra-stereo.html")
+            if not os.path.isfile(test_page):
+                return JSONResponse(
+                    {"error": "PICO Ultra stereo frontend has not been built"},
+                    status_code=404,
+                )
+            return FileResponse(
+                test_page,
+                headers={"Cache-Control": _frontend_cache_control(test_page)},
+            )
+
+        @self.__app.get("/api/pico-ultra-stereo/status")
+        async def pico_ultra_stereo_status():
+            return JSONResponse(self.__pico_stereo_bridge.status())
+
+        @self.__app.websocket("/ws/pico-ultra-stereo")
+        async def pico_ultra_stereo_websocket(websocket: WebSocket):
+            await websocket.accept()
+            await websocket.send_json(
+                {
+                    "type": "stream-config",
+                    "codec": "avc1.64002A",
+                    "avc_format": "annexb",
+                    "layout": "stereo-left-right",
+                }
+            )
+            last_sequence = -1
+            last_config_sequence = -1
+            try:
+                while True:
+                    codec_config = self.__pico_stereo_bridge.codec_config()
+                    if (
+                        codec_config is not None
+                        and codec_config.sequence != last_config_sequence
+                    ):
+                        await websocket.send_bytes(codec_config.wire_bytes())
+                        last_config_sequence = codec_config.sequence
+                    unit = await asyncio.to_thread(
+                        self.__pico_stereo_bridge.wait_after,
+                        last_sequence,
+                        1.0,
+                    )
+                    if unit is None:
+                        await websocket.send_json(
+                            {
+                                "type": "status",
+                                **self.__pico_stereo_bridge.status(),
+                            }
+                        )
+                        continue
+                    await websocket.send_bytes(unit.wire_bytes())
+                    last_sequence = unit.sequence
+            except (WebSocketDisconnect, RuntimeError):
+                return
+
         @self.__app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
             control_timeout_s = 5.0
@@ -826,6 +921,13 @@ class Teleop:
                             async with self.__video_lock:
                                 await close_video_sessions_for_client_id(client_id)
                                 await self._handle_video_message(websocket, message)
+                            # aiortc may spend roughly the full control lease
+                            # gathering host candidates for its initial offer.
+                            # Refresh the lease after that await so the answer
+                            # cannot expire and immediately close the session.
+                            async with self.__control_lock:
+                                if self.__controller_client_id == client_id:
+                                    self.__controller_last_seen_s = time.monotonic()
                         else:
                             await self._handle_video_message(websocket, message)
                         continue

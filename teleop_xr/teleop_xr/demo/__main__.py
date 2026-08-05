@@ -134,6 +134,24 @@ class DemoCLI(CommonCLI):
     camera_preview: bool = True
     """Show all recording camera streams in a local OpenCV window."""
 
+    d455_depth_test: bool = False
+    """Expose PC-synthesized D455 stereo RGB for the standalone Pico test page."""
+
+    d455_serial: Optional[str] = None
+    """Optional RealSense serial number used by the D455 stereo test."""
+
+    d455_test_fps: int = 30
+    """D455 stereo RGB prototype frame rate (30 is the validated default)."""
+
+    d455_test_width: int = 848
+    """Per-eye D455 stereo RGB width."""
+
+    d455_test_height: int = 480
+    """Per-eye D455 stereo RGB height."""
+
+    d455_test_bitrate_kbps: int = 6000
+    """Target H.264 bitrate for the side-by-side stereo stream."""
+
 
 class TUIHandler(logging.Handler):
     """Custom logging handler to send logs to a deque for TUI display."""
@@ -980,6 +998,29 @@ def main():
         extra_streams=cli.camera,
     )
     video_sources: dict[str, VideoSource] = {}
+
+    if cli.d455_depth_test:
+        from teleop_xr.d455_depth import D455StereoVideoSource
+
+        d455_source = D455StereoVideoSource(
+            width=cli.d455_test_width,
+            height=cli.d455_test_height,
+            fps=cli.d455_test_fps,
+            bitrate_kbps=cli.d455_test_bitrate_kbps,
+            serial=cli.d455_serial,
+        )
+        video_sources["d455_stereo"] = d455_source
+        camera_views["d455_stereo"] = {
+            "device": "shared://d455_stereo",
+            "width": cli.d455_test_width * 2,
+            "height": cli.d455_test_height,
+            "fps": cli.d455_test_fps,
+            "codec": "h264",
+            "bitrate_kbps": cli.d455_test_bitrate_kbps,
+        }
+        logger.info(
+            "D455 stereo RGB test enabled: open /d455-depth-test on the Pico"
+        )
 
     robot_vis = None
     if cli.mode == "ik":

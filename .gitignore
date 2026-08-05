@@ -59,4 +59,8 @@ teleop_xr/webxr/.next/
 teleop_xr/webxr/out/
 data/
 .tools/
+.tooling/
 .vendor/
+
+# Locally generated Android signing material
+pico_camera_sender/debug.keystore

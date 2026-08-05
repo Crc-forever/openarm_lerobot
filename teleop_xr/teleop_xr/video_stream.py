@@ -12,6 +12,7 @@ from aiortc import (
     RTCConfiguration,
     RTCIceServer,
     RTCPeerConnection,
+    RTCRtpSender,
     RTCSessionDescription,
 )
 from aiortc.mediastreams import VideoStreamTrack
@@ -202,6 +203,7 @@ class CameraStreamTrack(VideoStreamTrack):
         # The frontend uses track.id or transceiver.mid
         self.kind = "video"
         self._timestamp = WallClockVideoTimestamp()
+        self._last_frame_sequence = -1
 
     @property
     def id(self):
@@ -211,11 +213,17 @@ class CameraStreamTrack(VideoStreamTrack):
         # Ensure source is started
         self.source.start()
 
-        # Wait for new frame
-        while not self.source.new_frame_event.is_set():
-            await asyncio.sleep(0.001)
-
-        self.source.new_frame_event.clear()
+        # Sequence-aware sources cannot lose a notification if the producer
+        # publishes between Event.is_set() and Event.clear(). Generic sources
+        # retain the legacy Event path.
+        if hasattr(self.source, "frame_sequence"):
+            while self.source.frame_sequence == self._last_frame_sequence:
+                await asyncio.sleep(0.001)
+            self._last_frame_sequence = self.source.frame_sequence
+        else:
+            while not self.source.new_frame_event.is_set():
+                await asyncio.sleep(0.001)
+            self.source.new_frame_event.clear()
         ok, frame = self.source.read()
 
         if not ok or frame is None:
@@ -236,7 +244,8 @@ class CameraStreamTrack(VideoStreamTrack):
         return video_frame
 
     def stop(self):
-        self.source.stop()
+        if getattr(self.source, "stop_on_track_end", True):
+            self.source.stop()
 
 
 def build_sources(configs: list[VideoStreamConfig]) -> dict[str, VideoSource]:
@@ -262,12 +271,47 @@ class VideoStreamManager:
         self._tracks: list[CameraStreamTrack] = []
 
     async def create_offer(self) -> RTCSessionDescription:
+        target_h264_bitrates = [
+            int(getattr(source, "target_bitrate_bps", 0))
+            for source in self._sources.values()
+            if str(getattr(source, "preferred_codec", "")).upper() == "H264"
+        ]
+        if target_h264_bitrates:
+            # aiortc 1.15 has no public sender bitrate setter. Its H264 encoder
+            # initializes from these module limits and later follows receiver
+            # REMB feedback, so configure both before the first encoded frame.
+            from aiortc.codecs import h264
+            import aiortc.codecs
+
+            from .h264_encoder import LowLatencyH264Encoder
+
+            target_bitrate = max(target_h264_bitrates)
+            h264.DEFAULT_BITRATE = target_bitrate
+            h264.MAX_BITRATE = max(h264.MAX_BITRATE, target_bitrate)
+            aiortc.codecs.H264Encoder = LowLatencyH264Encoder
+
         self._tracks = [
             CameraStreamTrack(source, stream_id)
             for stream_id, source in self._sources.items()
         ]
         for track in self._tracks:
             transceiver = self._pc.addTransceiver(track, direction="sendonly")
+            source = self._sources[track.stream_id]
+            preferred_codec = str(
+                getattr(source, "preferred_codec", "")
+            ).lower()
+            if preferred_codec:
+                codecs = RTCRtpSender.getCapabilities("video").codecs
+                preferred = [
+                    codec
+                    for codec in codecs
+                    if codec.mimeType.lower() == f"video/{preferred_codec}"
+                ]
+                retransmission = [
+                    codec for codec in codecs if codec.mimeType.lower() == "video/rtx"
+                ]
+                if preferred:
+                    transceiver.setCodecPreferences(preferred + retransmission)
             if hasattr(transceiver.sender, "_stream_id"):
                 transceiver.sender._stream_id = track.id
             else:

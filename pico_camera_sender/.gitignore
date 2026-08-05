@@ -1,0 +1,7 @@
+/.gradle/
+/app/build/
+/build/
+/native_probe/build-*/
+/native_sender/build-*/
+/local.properties
+debug.keystore
