@@ -69,6 +69,7 @@ export function PicoUltraStereoTest() {
 	const decoderRef = useRef<VideoDecoder | null>(null);
 	const socketRef = useRef<WebSocket | null>(null);
 	const resourcesRef = useRef<RenderResources | null>(null);
+	const decodedFrameVersionRef = useRef(0);
 	const [senderConnected, setSenderConnected] = useState(false);
 	const [videoReady, setVideoReady] = useState(false);
 	const [dimensions, setDimensions] = useState("等待视频…");
@@ -91,6 +92,7 @@ export function PicoUltraStereoTest() {
 		let disposed = false;
 		let codecConfig = new Uint8Array();
 		let waitingForKeyFrame = true;
+		let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 		const decoder = new VideoDecoder({
 			output: (frame) => {
 				if (disposed) {
@@ -104,6 +106,7 @@ export function PicoUltraStereoTest() {
 				}
 				context.drawImage(frame, 0, 0, canvas.width, canvas.height);
 				frame.close();
+				decodedFrameVersionRef.current += 1;
 				setVideoReady(true);
 			},
 			error: (reason) => {
@@ -114,16 +117,8 @@ export function PicoUltraStereoTest() {
 		decoderRef.current = decoder;
 
 		const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-		const socket = new WebSocket(`${protocol}//${window.location.host}/ws/pico-ultra-stereo`);
-		socket.binaryType = "arraybuffer";
-		socketRef.current = socket;
-		socket.onopen = () => setError(null);
-		socket.onclose = () => {
-			setSenderConnected(false);
-			if (!disposed) setError("PICO Ultra 视频中继连接已断开");
-		};
-		socket.onerror = () => setError("无法连接 PICO Ultra 视频中继");
-		socket.onmessage = (event) => {
+		let socket: WebSocket | null = null;
+		const handleMessage = (event: MessageEvent) => {
 			if (typeof event.data === "string") {
 				const message = JSON.parse(event.data) as { type: string; codec?: string; sender_connected?: boolean };
 				if (message.type === "stream-config" && decoder.state === "unconfigured") {
@@ -173,10 +168,29 @@ export function PicoUltraStereoTest() {
 			}));
 			waitingForKeyFrame = false;
 		};
+		const connect = () => {
+			if (disposed) return;
+			socket = new WebSocket(`${protocol}//${window.location.host}/ws/pico-ultra-stereo`);
+			socket.binaryType = "arraybuffer";
+			socketRef.current = socket;
+			socket.onopen = () => setError(null);
+			socket.onclose = () => {
+				setSenderConnected(false);
+				if (disposed) return;
+				waitingForKeyFrame = true;
+				if (decoder.state === "configured") decoder.reset();
+				setError("PICO Ultra 视频短断，正在重连…");
+				reconnectTimer = setTimeout(connect, 500);
+			};
+			socket.onerror = () => setError("无法连接 PICO Ultra 视频中继");
+			socket.onmessage = handleMessage;
+		};
+		connect();
 
 		return () => {
 			disposed = true;
-			socket.close();
+			if (reconnectTimer) clearTimeout(reconnectTimer);
+			socket?.close();
 			if (decoder.state !== "closed") decoder.close();
 			decoderRef.current = null;
 			socketRef.current = null;
@@ -251,8 +265,12 @@ export function PicoUltraStereoTest() {
 			session.addEventListener("end", () => void stopXR(), { once: true });
 			resourcesRef.current = { renderer, geometry, materials, texture, session };
 			setInXR(true);
+			let uploadedFrameVersion = -1;
 			renderer.setAnimationLoop(() => {
-				texture.needsUpdate = true;
+				if (uploadedFrameVersion !== decodedFrameVersionRef.current) {
+					texture.needsUpdate = true;
+					uploadedFrameVersion = decodedFrameVersionRef.current;
+				}
 				const eyes = renderer.xr.getCamera().cameras;
 				if (eyes.length >= 2) {
 					eyes[0].layers.enable(1); eyes[0].layers.disable(2);
