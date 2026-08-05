@@ -34,9 +34,37 @@ controls:
     input_min: 0.05
     input_max: 0.85
     pressure_input_max: 1.0
-    # Conservative initial DM4310 torque feed-forward. Increase only after
-    # checking grip, motor temperature, and empty-close behavior on hardware.
-    max_closing_torque_nm: 0.30
+    # This is a feedback-torque target, not an unconditional feed-forward.
+    # DM-J4310-2EC is rated for 3 Nm continuous torque. Keep the requested
+    # hold below that rating while allowing the controller to correct error.
+    max_closing_torque_nm: 2.50
+    force_control:
+      # Remove position-error squeeze in the pressure zone. KD remains active
+      # for damping; force comes from the feedback torque controller below.
+      position_kp: 0.0
+      torque_kp: 0.5
+      torque_ki: 1.5
+      integral_limit_nm_s: 0.10
+      feedback_filter_alpha: 0.20
+      # Independent output and total-effort boundaries. Position-mode KP is
+      # also reduced dynamically so sustained effort stays at or below the
+      # motor's 3 Nm continuous rating.
+      max_command_torque_nm: 3.00
+      max_total_torque_nm: 3.00
+      # Match the original DM4310 MIT torque range during free closing so the
+      # original KP=50 / 600 deg/s motion is not software-throttled. Contact
+      # detection transfers to the lower sustained limit within 30 ms.
+      max_approach_torque_nm: 10.00
+      max_torque_rate_nm_s: 10.0
+      # Stay in position mode while approaching. Enter force mode only after
+      # the motor is loaded, nearly stopped, and lagging its position command.
+      contact_torque_nm: 0.12
+      contact_velocity_deg_s: 5.0
+      contact_position_error_deg: 1.0
+      contact_confirm_cycles: 3
+      # Linearly reduce force above 55 C and remove it at 65 C.
+      temperature_derate_start_c: 55.0
+      temperature_cutoff_c: 65.0
 
 lerobot:
   robot_type: bi_openarm_follower

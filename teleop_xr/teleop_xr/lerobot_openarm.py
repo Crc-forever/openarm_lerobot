@@ -66,6 +66,16 @@ class _QueuedAction:
     gripper_torques_nm: dict[str, float]
 
 
+@dataclass
+class _GripperForceState:
+    active: bool = False
+    filtered_torque_nm: float = 0.0
+    integral_nm_s: float = 0.0
+    command_torque_nm: float = 0.0
+    last_update_time: float | None = None
+    contact_cycles: int = 0
+
+
 class ArmPowerState(str, Enum):
     """What the host can prove about an arm's motor power state."""
 
@@ -155,10 +165,15 @@ class LeRobotOpenArmOutput:
             self.gripper_input_min,
             self.gripper_input_max,
         ) = load_gripper_input_range(self.control_config_path)
-        (
-            self.gripper_pressure_input_max,
-            self.gripper_max_closing_torque_nm,
-        ) = load_gripper_pressure(self.control_config_path)
+        self._gripper_force_settings = load_gripper_pressure(
+            self.control_config_path
+        )
+        self.gripper_pressure_input_max = (
+            self._gripper_force_settings.pressure_input_max
+        )
+        self.gripper_max_closing_torque_nm = (
+            self._gripper_force_settings.max_target_torque_nm
+        )
         (
             self.gripper_contact_hold_kp,
             self.gripper_contact_window_deg,
@@ -211,6 +226,9 @@ class LeRobotOpenArmOutput:
         self._atexit_handler: Any | None = None
         self._arm_power_state = {
             side: ArmPowerState.DISCONNECTED for side in _SIDES
+        }
+        self._gripper_force_state = {
+            side: _GripperForceState() for side in _SIDES
         }
 
     def connect(self) -> None:
@@ -1627,6 +1645,28 @@ class LeRobotOpenArmOutput:
             ("right", self._robot.right_arm),
         ):
             commands: dict[str, tuple[float, float, float, float, float]] = {}
+            requested_gripper_torque = max(
+                0.0,
+                float(gripper_torques_nm.get(side, 0.0)),
+            )
+            gripper_force_active = self._gripper_force_mode_ready(
+                side,
+                arm.bus,
+                requested_gripper_torque,
+                targets[f"{side}_gripper"],
+                positions[f"{side}_gripper"],
+                control_time,
+            )
+            gripper_command_torque = self._gripper_force_command(
+                side,
+                arm.bus,
+                (
+                    requested_gripper_torque
+                    if gripper_force_active
+                    else 0.0
+                ),
+                control_time,
+            )
             for motor in arm.bus.motors:
                 name = f"{side}_{motor}"
                 limit = self._control_limits[motor]
@@ -1635,6 +1675,9 @@ class LeRobotOpenArmOutput:
                         arm.bus,
                         motor,
                         targets[name],
+                        positions[name],
+                        gripper_command_torque if motor == "gripper" else 0.0,
+                        gripper_force_active,
                     ),
                     limit.kd,
                     positions[name],
@@ -1642,7 +1685,7 @@ class LeRobotOpenArmOutput:
                     # noisy derivative feed-forward at contact/fully closed.
                     0.0 if motor == "gripper" else velocities[name],
                     (
-                        float(gripper_torques_nm.get(side, 0.0))
+                        gripper_command_torque
                         if motor == "gripper"
                         else 0.0
                     ),
@@ -1662,22 +1705,222 @@ class LeRobotOpenArmOutput:
         }
         return sent, observation
 
+    def _gripper_force_mode_ready(
+        self,
+        side: str,
+        bus: Any,
+        requested_torque_nm: float,
+        requested_position: float,
+        commanded_position: float,
+        now: float,
+    ) -> bool:
+        """Approach in position mode, then latch force mode after contact."""
+        controller = self._gripper_force_state[side]
+        if requested_torque_nm <= 0.0:
+            controller.contact_cycles = 0
+            return False
+        if controller.active:
+            return True
+
+        settings = self._gripper_force_settings
+        feedback = bus._last_known_states["gripper"]
+        actual_position = float(feedback["position"])
+        measured_torque_nm = abs(float(feedback["torque"]))
+        velocity_deg_s = abs(float(feedback["velocity"]))
+        position_error_deg = abs(commanded_position - actual_position)
+        at_closed_stop = (
+            requested_position == self.gripper_closed_deg
+            and actual_position
+            >= self.gripper_closed_deg - self.gripper_contact_window_deg
+        )
+        hard_contact = (
+            position_error_deg >= settings.contact_position_error_deg
+            and velocity_deg_s <= settings.contact_velocity_deg_s
+            and measured_torque_nm
+            >= 0.75 * settings.max_total_torque_nm
+        )
+        soft_contact = (
+            position_error_deg >= settings.contact_position_error_deg
+            and velocity_deg_s <= settings.contact_velocity_deg_s
+            and measured_torque_nm >= settings.contact_torque_nm
+        )
+        if at_closed_stop or hard_contact:
+            controller.contact_cycles = settings.contact_confirm_cycles
+        elif soft_contact:
+            controller.contact_cycles += 1
+        else:
+            controller.contact_cycles = 0
+
+        if controller.contact_cycles < settings.contact_confirm_cycles:
+            return False
+        controller.active = True
+        controller.filtered_torque_nm = measured_torque_nm
+        controller.integral_nm_s = 0.0
+        controller.command_torque_nm = 0.0
+        controller.last_update_time = now
+        return True
+
+    def _gripper_force_command(
+        self,
+        side: str,
+        bus: Any,
+        target_torque_nm: float,
+        now: float,
+    ) -> float:
+        """Close the loop around measured motor torque with thermal derating."""
+        settings = self._gripper_force_settings
+        controller = self._gripper_force_state[side]
+        feedback = bus._last_known_states["gripper"]
+        # Control and protect on magnitude. This remains safe if a firmware or
+        # mirrored mechanism reports closing effort with the opposite sign.
+        measured_torque_nm = abs(float(feedback["torque"]))
+
+        if target_torque_nm <= 0.0:
+            controller.active = False
+            controller.filtered_torque_nm = measured_torque_nm
+            controller.integral_nm_s = 0.0
+            controller.command_torque_nm = 0.0
+            controller.last_update_time = now
+            return 0.0
+
+        target_torque_nm = min(
+            target_torque_nm,
+            settings.max_target_torque_nm,
+        )
+        if not controller.active:
+            controller.active = True
+            controller.filtered_torque_nm = measured_torque_nm
+            controller.integral_nm_s = 0.0
+            controller.command_torque_nm = 0.0
+            controller.last_update_time = now
+
+        previous_time = controller.last_update_time
+        dt = (
+            self._control_period_s
+            if previous_time is None
+            else min(0.05, max(0.0, now - previous_time))
+        )
+        controller.last_update_time = now
+        alpha = settings.feedback_filter_alpha
+        controller.filtered_torque_nm += alpha * (
+            measured_torque_nm - controller.filtered_torque_nm
+        )
+
+        hottest_c = max(
+            float(feedback["temp_mos"]),
+            float(feedback["temp_rotor"]),
+        )
+        if hottest_c >= settings.temperature_cutoff_c:
+            thermal_scale = 0.0
+        elif hottest_c <= settings.temperature_derate_start_c:
+            thermal_scale = 1.0
+        else:
+            thermal_scale = (
+                settings.temperature_cutoff_c - hottest_c
+            ) / (
+                settings.temperature_cutoff_c
+                - settings.temperature_derate_start_c
+            )
+        target_torque_nm *= thermal_scale
+
+        if thermal_scale <= 0.0:
+            controller.integral_nm_s = 0.0
+            controller.command_torque_nm = 0.0
+            return 0.0
+
+        error_nm = target_torque_nm - controller.filtered_torque_nm
+        integral_limit = settings.integral_limit_nm_s
+        controller.integral_nm_s = min(
+            integral_limit,
+            max(
+                -integral_limit,
+                controller.integral_nm_s + error_nm * dt,
+            ),
+        )
+        desired_torque_nm = (
+            target_torque_nm
+            + settings.torque_kp * error_nm
+            + settings.torque_ki * controller.integral_nm_s
+        )
+        desired_torque_nm = min(
+            settings.max_command_torque_nm,
+            max(0.0, desired_torque_nm),
+        )
+
+        # A measured effort above the total boundary gets an immediate release;
+        # only increases are rate-limited. This reacts before the firmware's
+        # sustained-load detector reaches its overload state.
+        if measured_torque_nm >= settings.max_total_torque_nm:
+            desired_torque_nm = 0.0
+            controller.integral_nm_s = 0.0
+        if desired_torque_nm > controller.command_torque_nm:
+            desired_torque_nm = min(
+                desired_torque_nm,
+                controller.command_torque_nm
+                + settings.max_torque_rate_nm_s * dt,
+            )
+        controller.command_torque_nm = desired_torque_nm
+        return desired_torque_nm
+
     def _motor_position_kp(
         self,
         bus: Any,
         motor: str,
         requested_target: float,
+        commanded_position: float,
+        feedforward_torque_nm: float,
+        gripper_force_active: bool,
     ) -> float:
-        """Reduce only empty-close gripper stiffness at its calibrated stop."""
+        """Keep estimated gripper position effort inside its torque budget."""
         limit = self._control_limits[motor]
-        if (
-            motor == "gripper"
-            and requested_target == self.gripper_closed_deg
-            and float(bus._last_known_states[motor]["position"])
+        if motor != "gripper":
+            return limit.kp
+
+        actual_position = float(bus._last_known_states[motor]["position"])
+        measured_torque_nm = abs(
+            float(bus._last_known_states[motor]["torque"])
+        )
+        torque_budget_nm = (
+            self._gripper_force_settings.max_total_torque_nm
+            if gripper_force_active
+            else self._gripper_force_settings.max_approach_torque_nm
+        )
+        if measured_torque_nm >= torque_budget_nm:
+            return 0.0
+        if gripper_force_active:
+            position_kp = min(
+                limit.kp,
+                self._gripper_force_settings.position_kp,
+            )
+        elif (
+            requested_target == self.gripper_closed_deg
+            and actual_position
             >= self.gripper_closed_deg - self.gripper_contact_window_deg
         ):
-            return min(limit.kp, self.gripper_contact_hold_kp)
-        return limit.kp
+            position_kp = min(limit.kp, self.gripper_contact_hold_kp)
+        else:
+            position_kp = limit.kp
+
+        position_error_rad = abs(
+            math.radians(commanded_position - actual_position)
+        )
+        if position_error_rad <= 1e-9:
+            return position_kp
+        remaining_torque_nm = max(
+            0.0,
+            torque_budget_nm
+            - abs(feedforward_torque_nm)
+            - limit.kd
+            * abs(
+                math.radians(
+                    float(bus._last_known_states[motor]["velocity"])
+                )
+            ),
+        )
+        return min(
+            position_kp,
+            remaining_torque_nm / position_error_rad,
+        )
 
     def _hold_last_position(self) -> dict[str, float]:
         """Freeze the planner at its last sent target with zero velocity."""

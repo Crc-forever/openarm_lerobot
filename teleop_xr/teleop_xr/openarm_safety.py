@@ -24,6 +24,27 @@ class PT2TrajectoryGain:
     kd: float
 
 
+@dataclass(frozen=True)
+class GripperForceControlSettings:
+    pressure_input_max: float
+    max_target_torque_nm: float
+    position_kp: float
+    torque_kp: float
+    torque_ki: float
+    integral_limit_nm_s: float
+    feedback_filter_alpha: float
+    max_command_torque_nm: float
+    max_total_torque_nm: float
+    max_approach_torque_nm: float
+    max_torque_rate_nm_s: float
+    contact_torque_nm: float
+    contact_velocity_deg_s: float
+    contact_position_error_deg: float
+    contact_confirm_cycles: int
+    temperature_derate_start_c: float
+    temperature_cutoff_c: float
+
+
 def load_joint_position_limits(
     config_path: str | Path,
 ) -> dict[str, dict[str, tuple[float, float]]]:
@@ -178,25 +199,95 @@ def load_gripper_input_range(config_path: str | Path) -> tuple[float, float]:
 
 def load_gripper_pressure(
     config_path: str | Path,
-) -> tuple[float, float]:
-    """Load the trigger endpoint and torque limit for the pressure zone."""
+) -> GripperForceControlSettings:
+    """Load and validate feedback force-control settings."""
     path = Path(config_path)
     document: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
     gripper = document["controls"]["gripper"]
     position_input_max = float(gripper["input_max"])
-    pressure_input_max = float(gripper["pressure_input_max"])
-    max_torque_nm = float(gripper["max_closing_torque_nm"])
-    if not position_input_max < pressure_input_max <= 1.0:
+    force = gripper["force_control"]
+    settings = GripperForceControlSettings(
+        pressure_input_max=float(gripper["pressure_input_max"]),
+        max_target_torque_nm=float(gripper["max_closing_torque_nm"]),
+        position_kp=float(force["position_kp"]),
+        torque_kp=float(force["torque_kp"]),
+        torque_ki=float(force["torque_ki"]),
+        integral_limit_nm_s=float(force["integral_limit_nm_s"]),
+        feedback_filter_alpha=float(force["feedback_filter_alpha"]),
+        max_command_torque_nm=float(force["max_command_torque_nm"]),
+        max_total_torque_nm=float(force["max_total_torque_nm"]),
+        max_approach_torque_nm=float(force["max_approach_torque_nm"]),
+        max_torque_rate_nm_s=float(force["max_torque_rate_nm_s"]),
+        contact_torque_nm=float(force["contact_torque_nm"]),
+        contact_velocity_deg_s=float(force["contact_velocity_deg_s"]),
+        contact_position_error_deg=float(
+            force["contact_position_error_deg"]
+        ),
+        contact_confirm_cycles=int(force["contact_confirm_cycles"]),
+        temperature_derate_start_c=float(
+            force["temperature_derate_start_c"]
+        ),
+        temperature_cutoff_c=float(force["temperature_cutoff_c"]),
+    )
+    if not position_input_max < settings.pressure_input_max <= 1.0:
         raise ValueError(
             f"{path}: require gripper.input_max < "
             "gripper.pressure_input_max <= 1"
         )
-    if not math.isfinite(max_torque_nm) or max_torque_nm < 0.0:
+    numeric_values = vars(settings)
+    if not all(math.isfinite(value) for value in numeric_values.values()):
+        raise ValueError(f"{path}: gripper force-control values must be finite")
+    if settings.max_target_torque_nm < 0.0:
         raise ValueError(
             f"{path}: gripper.max_closing_torque_nm must be finite "
             "and non-negative"
         )
-    return pressure_input_max, max_torque_nm
+    nonnegative = {
+        "position_kp": settings.position_kp,
+        "torque_kp": settings.torque_kp,
+        "torque_ki": settings.torque_ki,
+        "integral_limit_nm_s": settings.integral_limit_nm_s,
+    }
+    if any(value < 0.0 for value in nonnegative.values()):
+        raise ValueError(
+            f"{path}: gripper force-control gains and integral limit "
+            "must be non-negative"
+        )
+    if not 0.0 < settings.feedback_filter_alpha <= 1.0:
+        raise ValueError(
+            f"{path}: gripper feedback_filter_alpha must be in (0, 1]"
+        )
+    if not (
+        0.0 < settings.max_target_torque_nm
+        <= settings.max_command_torque_nm
+        <= settings.max_total_torque_nm
+        <= settings.max_approach_torque_nm
+    ):
+        raise ValueError(
+            f"{path}: require 0 < target torque <= command torque "
+            "<= total torque <= approach torque"
+        )
+    if settings.max_torque_rate_nm_s <= 0.0:
+        raise ValueError(
+            f"{path}: gripper max_torque_rate_nm_s must be positive"
+        )
+    if (
+        settings.contact_torque_nm <= 0.0
+        or settings.contact_velocity_deg_s <= 0.0
+        or settings.contact_position_error_deg <= 0.0
+        or settings.contact_confirm_cycles <= 0
+    ):
+        raise ValueError(
+            f"{path}: gripper contact thresholds must be positive"
+        )
+    if not (
+        settings.temperature_derate_start_c
+        < settings.temperature_cutoff_c
+    ):
+        raise ValueError(
+            f"{path}: gripper temperature derate start must be below cutoff"
+        )
+    return settings
 
 
 def load_gripper_contact_hold(
