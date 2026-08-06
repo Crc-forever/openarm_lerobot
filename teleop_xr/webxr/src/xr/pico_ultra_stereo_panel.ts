@@ -27,7 +27,12 @@ const fragmentShader = `
 	uniform float convergenceShift;
 	varying vec2 videoUv;
 	void main() {
-		float correctedX = clamp(videoUv.x + convergenceShift, 0.0, 1.0);
+		// Crop the invalid outer strip introduced by convergence correction.
+		// Resampling the remaining range avoids ClampToEdge's blurred smear while
+		// preserving the same optical centre shift in each eye.
+		float edgeCrop = abs(convergenceShift) * 2.0;
+		float cropStart = convergenceShift > 0.0 ? edgeCrop : 0.0;
+		float correctedX = cropStart + videoUv.x * (1.0 - edgeCrop);
 		vec2 eyeUv = vec2(eyeOffset + correctedX * 0.5, videoUv.y);
 		gl_FragColor = vec4(texture2D(stereoMap, eyeUv).rgb, 1.0);
 	}
