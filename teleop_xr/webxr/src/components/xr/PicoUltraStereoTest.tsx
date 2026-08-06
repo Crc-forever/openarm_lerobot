@@ -39,8 +39,6 @@ const fragmentShader = `
 	uniform float eyeOffset;
 	varying vec2 videoUv;
 	void main() {
-		// CanvasTexture already performs the DOM-canvas to WebGL Y conversion.
-		// Flipping Y again here made the immersive view upside down.
 		vec2 eyeUv = vec2(eyeOffset + videoUv.x * 0.5, videoUv.y);
 		gl_FragColor = vec4(texture2D(stereoMap, eyeUv).rgb, 1.0);
 	}
@@ -63,13 +61,12 @@ function joinBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
 	return result;
 }
 
-export function PicoUltraStereoTest() {
+export function PicoUltraStereoTest({ transport = "tcp" }: { transport?: "tcp" | "rtc" }) {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const canvasHostRef = useRef<HTMLDivElement>(null);
 	const decoderRef = useRef<VideoDecoder | null>(null);
 	const socketRef = useRef<WebSocket | null>(null);
 	const resourcesRef = useRef<RenderResources | null>(null);
-	const decodedFrameVersionRef = useRef(0);
 	const [senderConnected, setSenderConnected] = useState(false);
 	const [videoReady, setVideoReady] = useState(false);
 	const [dimensions, setDimensions] = useState("等待视频…");
@@ -77,7 +74,7 @@ export function PicoUltraStereoTest() {
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
-		if (!("VideoDecoder" in window)) {
+		if (transport === "tcp" && !("VideoDecoder" in window)) {
 			setError("当前 PICO Browser 不支持 WebCodecs VideoDecoder");
 			return;
 		}
@@ -90,9 +87,65 @@ export function PicoUltraStereoTest() {
 		}
 
 		let disposed = false;
+		if (transport === "rtc") {
+			const video = document.createElement("video");
+			video.autoplay = true;
+			video.muted = true;
+			video.playsInline = true;
+			const peer = new RTCPeerConnection({ bundlePolicy: "max-bundle" });
+			const pendingCandidates: RTCIceCandidateInit[] = [];
+			const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+			const socket = new WebSocket(`${protocol}//${window.location.host}/ws/pico-ultra-rtc-signal`);
+			socketRef.current = socket;
+			let drawTimer: ReturnType<typeof setInterval> | null = null;
+			peer.ontrack = (event) => {
+				video.srcObject = event.streams[0] ?? new MediaStream([event.track]);
+				void video.play();
+				drawTimer = setInterval(() => {
+					if (disposed || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+					if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+						canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+						setDimensions(`${video.videoWidth}×${video.videoHeight}`);
+					}
+					context.drawImage(video, 0, 0, canvas.width, canvas.height);
+					setVideoReady(true); setSenderConnected(true);
+				}, 16);
+			};
+			peer.onconnectionstatechange = () => {
+				setSenderConnected(peer.connectionState === "connected");
+				if (peer.connectionState === "failed") setError("WebRTC 连接失败");
+			};
+			peer.onicecandidate = (event) => {
+				if (event.candidate && socket.readyState === WebSocket.OPEN)
+					socket.send(JSON.stringify({ type: "candidate", candidate: event.candidate.candidate, mid: event.candidate.sdpMid }));
+			};
+			socket.onopen = () => setError(null);
+			socket.onerror = () => setError("无法连接 WebRTC 信令服务");
+			socket.onmessage = async (event) => {
+				const message = JSON.parse(event.data) as { type: string; sdp?: string; candidate?: string; mid?: string; connected?: boolean };
+				if (message.type === "offer" && message.sdp) {
+					await peer.setRemoteDescription({ type: "offer", sdp: message.sdp });
+					await peer.setLocalDescription(await peer.createAnswer());
+					socket.send(JSON.stringify({ type: "answer", sdp: peer.localDescription?.sdp }));
+					for (const candidate of pendingCandidates.splice(0)) await peer.addIceCandidate(candidate);
+				} else if (message.type === "candidate" && message.candidate) {
+					const candidate = message.candidate.startsWith("candidate:") ? message.candidate : `candidate:${message.candidate}`;
+					const init = { candidate, sdpMid: message.mid ?? "video" };
+					if (peer.remoteDescription) await peer.addIceCandidate(init); else pendingCandidates.push(init);
+				} else if (message.type === "sender-status") {
+					setSenderConnected(Boolean(message.connected));
+				}
+			};
+			return () => {
+				disposed = true;
+				if (drawTimer) clearInterval(drawTimer);
+				socket.close(); peer.close(); video.srcObject = null;
+				socketRef.current = null;
+			};
+		}
+
 		let codecConfig = new Uint8Array();
 		let waitingForKeyFrame = true;
-		let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 		const decoder = new VideoDecoder({
 			output: (frame) => {
 				if (disposed) {
@@ -106,7 +159,6 @@ export function PicoUltraStereoTest() {
 				}
 				context.drawImage(frame, 0, 0, canvas.width, canvas.height);
 				frame.close();
-				decodedFrameVersionRef.current += 1;
 				setVideoReady(true);
 			},
 			error: (reason) => {
@@ -117,8 +169,16 @@ export function PicoUltraStereoTest() {
 		decoderRef.current = decoder;
 
 		const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-		let socket: WebSocket | null = null;
-		const handleMessage = (event: MessageEvent) => {
+		const socket = new WebSocket(`${protocol}//${window.location.host}/ws/pico-ultra-stereo`);
+		socket.binaryType = "arraybuffer";
+		socketRef.current = socket;
+		socket.onopen = () => setError(null);
+		socket.onclose = () => {
+			setSenderConnected(false);
+			if (!disposed) setError("PICO Ultra 视频中继连接已断开");
+		};
+		socket.onerror = () => setError("无法连接 PICO Ultra 视频中继");
+		socket.onmessage = (event) => {
 			if (typeof event.data === "string") {
 				const message = JSON.parse(event.data) as { type: string; codec?: string; sender_connected?: boolean };
 				if (message.type === "stream-config" && decoder.state === "unconfigured") {
@@ -168,34 +228,15 @@ export function PicoUltraStereoTest() {
 			}));
 			waitingForKeyFrame = false;
 		};
-		const connect = () => {
-			if (disposed) return;
-			socket = new WebSocket(`${protocol}//${window.location.host}/ws/pico-ultra-stereo`);
-			socket.binaryType = "arraybuffer";
-			socketRef.current = socket;
-			socket.onopen = () => setError(null);
-			socket.onclose = () => {
-				setSenderConnected(false);
-				if (disposed) return;
-				waitingForKeyFrame = true;
-				if (decoder.state === "configured") decoder.reset();
-				setError("PICO Ultra 视频短断，正在重连…");
-				reconnectTimer = setTimeout(connect, 500);
-			};
-			socket.onerror = () => setError("无法连接 PICO Ultra 视频中继");
-			socket.onmessage = handleMessage;
-		};
-		connect();
 
 		return () => {
 			disposed = true;
-			if (reconnectTimer) clearTimeout(reconnectTimer);
-			socket?.close();
+			socket.close();
 			if (decoder.state !== "closed") decoder.close();
 			decoderRef.current = null;
 			socketRef.current = null;
 		};
-	}, []);
+	}, [transport]);
 
 	const stopXR = useCallback(async () => {
 		const resources = resourcesRef.current;
@@ -242,10 +283,7 @@ export function PicoUltraStereoTest() {
 			texture.wrapS = ClampToEdgeWrapping;
 			texture.wrapT = ClampToEdgeWrapping;
 			const distance = 1;
-			// The calibrated Ultra frames are 1280x960 per eye (4:3). Preserve
-			// that aspect ratio instead of stretching them onto a square plane.
-			// At one metre this approximates the camera's 76° x 61° pinhole FOV.
-			const geometry = new PlaneGeometry(1.57, 1.18);
+			const geometry = new PlaneGeometry(2.22, 2.22);
 			const materials: [ShaderMaterial, ShaderMaterial] = [eyeMaterial(texture, 0), eyeMaterial(texture, 0.5)];
 			materials.forEach((material, index) => {
 				const plane = new Mesh(geometry, material);
@@ -265,12 +303,8 @@ export function PicoUltraStereoTest() {
 			session.addEventListener("end", () => void stopXR(), { once: true });
 			resourcesRef.current = { renderer, geometry, materials, texture, session };
 			setInXR(true);
-			let uploadedFrameVersion = -1;
 			renderer.setAnimationLoop(() => {
-				if (uploadedFrameVersion !== decodedFrameVersionRef.current) {
-					texture.needsUpdate = true;
-					uploadedFrameVersion = decodedFrameVersionRef.current;
-				}
+				texture.needsUpdate = true;
 				const eyes = renderer.xr.getCamera().cameras;
 				if (eyes.length >= 2) {
 					eyes[0].layers.enable(1); eyes[0].layers.disable(2);
@@ -289,6 +323,7 @@ export function PicoUltraStereoTest() {
 			<div className="mx-auto max-w-5xl space-y-5">
 				<header>
 					<h1 className="text-3xl font-semibold">PICO 4 Ultra → PICO 4 双目视频</h1>
+					<p className="mt-1 text-xs text-emerald-400">{transport === "rtc" ? "WebRTC/UDP 直连" : "TCP 中继回退"}</p>
 					<p className="mt-2 text-zinc-400">Ultra 的左右彩色相机保持物理双目视差；PICO 4 将 SBS 两半直接提交给左右眼。</p>
 				</header>
 				<div className="rounded-xl border border-zinc-700 bg-zinc-900 p-4">

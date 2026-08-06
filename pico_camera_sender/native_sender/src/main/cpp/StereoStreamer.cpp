@@ -15,7 +15,7 @@
 #include <cstring>
 
 namespace {
-constexpr char kHost[] = "192.168.43.84";
+constexpr char kHost[] = "192.168.50.86";
 constexpr uint16_t kPort = 8091;
 constexpr uint8_t kConfigFlag = 1;
 constexpr uint8_t kKeyFrameFlag = 2;
@@ -68,8 +68,10 @@ bool StereoStreamer::Configure(uint32_t eyeWidth, uint32_t eyeHeight, uint32_t f
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_BIT_RATE, static_cast<int32_t>(bitrate));
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_FRAME_RATE, static_cast<int32_t>(fps));
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, 2);
-    // Android MediaCodecInfo.CodecProfileLevel: AVC High profile, level 4.2.
-    AMediaFormat_setInt32(format, "profile", 8);
+    // WebRTC browsers universally negotiate H.264 constrained baseline.
+    // This changes only the encoder profile; native stereo capture and SBS
+    // geometry remain byte-for-byte on the same path.
+    AMediaFormat_setInt32(format, "profile", 1);
     AMediaFormat_setInt32(format, "level", 8192);
     AMediaFormat_setInt32(format, "latency", 0);
     AMediaFormat_setInt32(format, "max-bframes", 0);
@@ -186,7 +188,10 @@ void StereoStreamer::DrainEncoder() {
                 width, height, codec_config_.size());
             AMediaFormat_delete(format);
             if (!codec_config_.empty()) {
-                SendAccessUnit(codec_config_.data(), codec_config_.size(), 0, kConfigFlag);
+                rtc_.SetCodecConfig(codec_config_.data(), codec_config_.size());
+                if (!rtc_.IsStreaming()) {
+                    SendAccessUnit(codec_config_.data(), codec_config_.size(), 0, kConfigFlag);
+                }
             }
             continue;
         }
@@ -200,8 +205,17 @@ void StereoStreamer::DrainEncoder() {
             if (info.flags & 1U) flags |= kKeyFrameFlag;
             if (flags & kConfigFlag) {
                 codec_config_.assign(buffer + info.offset, buffer + info.offset + info.size);
+                rtc_.SetCodecConfig(buffer + info.offset, static_cast<size_t>(info.size));
             }
-            SendAccessUnit(buffer + info.offset, static_cast<size_t>(info.size), info.presentationTimeUs, flags);
+            if (!(flags & kConfigFlag)) rtc_.SendFrame(
+                buffer + info.offset, static_cast<size_t>(info.size), info.presentationTimeUs,
+                (flags & kKeyFrameFlag) != 0);
+            const bool rtc_streaming = rtc_.IsStreaming();
+            if (rtc_streaming && !rtc_was_streaming_) CloseSocket();
+            if (!rtc_streaming) {
+                SendAccessUnit(buffer + info.offset, static_cast<size_t>(info.size), info.presentationTimeUs, flags);
+            }
+            rtc_was_streaming_ = rtc_streaming;
         }
         AMediaCodec_releaseOutputBuffer(codec_, static_cast<size_t>(index), false);
     }
@@ -288,4 +302,5 @@ void StereoStreamer::Stop() {
     }
     nv12_.clear();
     codec_config_.clear();
+    rtc_was_streaming_ = false;
 }

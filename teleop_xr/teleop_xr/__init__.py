@@ -26,6 +26,7 @@ from teleop_xr.camera_views import build_video_streams
 from teleop_xr.config import TeleopSettings
 from teleop_xr.robot_vis import RobotVisModule
 from teleop_xr.pico_stereo_bridge import PicoStereoBridge
+from teleop_xr.pico_rtc_signaling import PicoRtcSignaling
 
 TF_RUB2FLU = np.array([[0, 0, -1, 0], [-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1]])
 TF_RUB2FLU_ROT = TF_RUB2FLU[:3, :3]
@@ -260,6 +261,9 @@ class Teleop:
         self.__pico_stereo_bridge = PicoStereoBridge(
             port=int(os.environ.get("PICO_STEREO_TCP_PORT", "8091"))
         )
+        self.__pico_rtc_signaling = PicoRtcSignaling(
+            port=int(os.environ.get("PICO_STEREO_SIGNAL_PORT", "8092"))
+        )
 
         self.robot_vis: Optional[RobotVisModule] = None
         if self.__settings.robot_vis:
@@ -276,6 +280,7 @@ class Teleop:
     def _shutdown_video_sources(self) -> None:
         """Release persistent cameras after all WebRTC sessions are closed."""
         self.__pico_stereo_bridge.stop()
+        self.__pico_rtc_signaling.stop()
         for source in self.__video_sources.values():
             try:
                 source.stop()
@@ -610,9 +615,43 @@ class Teleop:
                 headers={"Cache-Control": _frontend_cache_control(test_page)},
             )
 
+        @self.__app.get("/pico-ultra-rtc")
+        async def pico_ultra_rtc_page():
+            test_page = os.path.join(static_dir, "pico-ultra-rtc.html")
+            if not os.path.isfile(test_page):
+                return JSONResponse({"error": "PICO Ultra RTC frontend has not been built"}, status_code=404)
+            return FileResponse(test_page, headers={"Cache-Control": _frontend_cache_control(test_page)})
+
         @self.__app.get("/api/pico-ultra-stereo/status")
         async def pico_ultra_stereo_status():
-            return JSONResponse(self.__pico_stereo_bridge.status())
+            return JSONResponse({**self.__pico_stereo_bridge.status(), "rtc": self.__pico_rtc_signaling.status()})
+
+        @self.__app.websocket("/ws/pico-ultra-rtc-signal")
+        async def pico_ultra_rtc_signal(websocket: WebSocket):
+            await websocket.accept()
+            sequence = self.__pico_rtc_signaling.latest_sequence()
+            await websocket.send_json({"type": "sender-status", "connected": self.__pico_rtc_signaling.status()["sender_connected"]})
+            self.__pico_rtc_signaling.send({"type": "viewer-ready"})
+
+            async def relay_sender() -> None:
+                nonlocal sequence
+                while True:
+                    item = await asyncio.to_thread(self.__pico_rtc_signaling.wait_after, sequence, 1.0)
+                    if item is None: continue
+                    sequence, message = item
+                    await websocket.send_json(message)
+
+            async def relay_viewer() -> None:
+                while True:
+                    message = await websocket.receive_json()
+                    if isinstance(message, dict): self.__pico_rtc_signaling.send(message)
+
+            tasks = [asyncio.create_task(relay_sender()), asyncio.create_task(relay_viewer())]
+            try: await asyncio.gather(*tasks)
+            except (WebSocketDisconnect, RuntimeError): pass
+            finally:
+                for task in tasks: task.cancel()
+                self.__pico_rtc_signaling.send({"type": "viewer-disconnected"})
 
         @self.__app.websocket("/ws/pico-ultra-stereo")
         async def pico_ultra_stereo_websocket(websocket: WebSocket):

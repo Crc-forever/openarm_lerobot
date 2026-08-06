@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "RtcTransport.h"
+
 class StereoStreamer {
 public:
     StereoStreamer() = default;
@@ -44,6 +46,8 @@ private:
     int socket_{-1};
     int64_t next_connect_us_{0};
     bool codec_config_sent_{false};
+    bool rtc_was_streaming_{false};
     std::vector<uint8_t> nv12_;
     std::vector<uint8_t> codec_config_;
+    RtcTransport rtc_{"192.168.50.86", 8092};
 };
