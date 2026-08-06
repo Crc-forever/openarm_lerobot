@@ -1,0 +1,76 @@
+{
+  "element": {
+    "sourceTag": "panel",
+    "type": "custom",
+    "children": [
+      {
+        "sourceTag": "container",
+        "type": "custom",
+        "children": [
+          {
+            "sourceTag": "text",
+            "type": "custom",
+            "children": [],
+            "properties": {
+              "id": "camera-label",
+              "fontSize": "42",
+              "fontWeight": "bold",
+              "color": "#e4e4e7",
+              "text": "PICO ULTRA 3D (WEBRTC)"
+            },
+            "dataUid": "uid-3"
+          }
+        ],
+        "properties": {
+          "width": "100%",
+          "height": "100%",
+          "padding": "20",
+          "backgroundColor": "#09090b",
+          "borderRadius": "24",
+          "alignItems": "center",
+          "justifyContent": "flex-start"
+        },
+        "dataUid": "uid-2"
+      }
+    ],
+    "properties": {
+      "width": "1000",
+      "height": "750",
+      "borderRadius": "24"
+    },
+    "dataUid": "uid-1"
+  },
+  "classes": {},
+  "ranges": {
+    "uid-1": {
+      "start": {
+        "line": 0,
+        "column": 0
+      },
+      "end": {
+        "line": 4,
+        "column": 8
+      }
+    },
+    "uid-2": {
+      "start": {
+        "line": 1,
+        "column": 2
+      },
+      "end": {
+        "line": 3,
+        "column": 14
+      }
+    },
+    "uid-3": {
+      "start": {
+        "line": 2,
+        "column": 4
+      },
+      "end": {
+        "line": 3,
+        "column": 2
+      }
+    }
+  }
+}

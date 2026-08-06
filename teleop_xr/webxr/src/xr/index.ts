@@ -39,6 +39,10 @@ import { ControllerCameraPanelSystem } from "./controller_camera_system";
 import { GlobalRefs } from "./global_refs";
 import { PanelSystem } from "./panel";
 import {
+	PicoUltraStereoEyeSystem,
+	PicoUltraStereoPanel,
+} from "./pico_ultra_stereo_panel";
+import {
 	CameraPanel,
 	CameraPanelSystem,
 	ControllerCameraPanel,
@@ -160,6 +164,20 @@ export const initWorld = async (
 	}
 
 	const cameraPanels = new Map<string, CameraPanel>();
+
+	// Native PICO Ultra camera -> direct WebRTC/UDP -> large binocular window.
+	// It lives in the same XR scene as robot controls and regular camera panels.
+	const picoUltraStereoPanel = new PicoUltraStereoPanel(world);
+	if (picoUltraStereoPanel.entity.object3D) {
+		placeRelative(
+			picoUltraStereoPanel.entity.object3D,
+			world.camera,
+			0.7,
+			-0.45,
+			-1.7,
+		);
+		picoUltraStereoPanel.faceUser();
+	}
 
 	// Controller-attached camera panels (for wrist cameras)
 	const leftControllerPanel = new ControllerCameraPanel(world, "left");
@@ -413,6 +431,7 @@ export const initWorld = async (
 		unsubscribeCameraViews();
 		unsubscribeCameraConfig();
 		videoClient.dispose();
+		picoUltraStereoPanel.dispose();
 
 		for (const [key, panel] of cameraPanels.entries()) {
 			panel.dispose();
@@ -439,6 +458,7 @@ export const initWorld = async (
 	world.registerSystem(ConnectionHudSystem);
 	world.registerSystem(CameraSettingsSystem);
 	world.registerSystem(CameraPanelSystem);
+	world.registerSystem(PicoUltraStereoEyeSystem);
 	world.registerSystem(YButtonPanelDragSystem);
 	world.registerSystem(PanelHoverSystem);
 	world.registerSystem(PanelDragLockSystem);
