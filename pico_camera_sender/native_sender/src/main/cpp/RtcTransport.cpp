@@ -14,7 +14,8 @@
 using json = nlohmann::json;
 using namespace std::chrono_literals;
 
-RtcTransport::RtcTransport(const char* host, uint16_t port) : host_(host), port_(port) {
+RtcTransport::RtcTransport(uint16_t port, uint16_t discoveryPort)
+    : port_(port), discovery_port_(discoveryPort) {
     rtc::InitLogger(rtc::LogLevel::Warning, [](rtc::LogLevel, std::string message) {
         __android_log_print(ANDROID_LOG_WARN, "OpenArmRTC", "%s", message.c_str());
     });
@@ -22,6 +23,91 @@ RtcTransport::RtcTransport(const char* host, uint16_t port) : host_(host), port_
 }
 
 RtcTransport::~RtcTransport() { Stop(); }
+
+std::string RtcTransport::ServerHost() const {
+    std::lock_guard lock(host_mutex_);
+    return host_;
+}
+
+bool RtcTransport::DiscoverServer(std::string* host, uint16_t* signalPort) {
+    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return false;
+
+    int enabled = 1;
+    setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &enabled, sizeof(enabled));
+    timeval timeout{0, 700000};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    const uint64_t nonce = static_cast<uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    const std::string payload = json{
+        {"type", "OPENARM_DISCOVER"},
+        {"version", 1},
+        {"device", "pico4-ultra"},
+        {"nonce", nonce},
+    }.dump();
+    sockaddr_in broadcast{};
+    broadcast.sin_family = AF_INET;
+    broadcast.sin_port = htons(discovery_port_);
+    broadcast.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+    const ssize_t sent = sendto(
+        fd,
+        payload.data(),
+        payload.size(),
+        0,
+        reinterpret_cast<sockaddr*>(&broadcast),
+        sizeof(broadcast));
+    if (sent != static_cast<ssize_t>(payload.size())) {
+        close(fd);
+        return false;
+    }
+
+    char buffer[4096];
+    sockaddr_in source{};
+    socklen_t sourceSize = sizeof(source);
+    const ssize_t count = recvfrom(
+        fd,
+        buffer,
+        sizeof(buffer),
+        0,
+        reinterpret_cast<sockaddr*>(&source),
+        &sourceSize);
+    close(fd);
+    if (count <= 0) return false;
+
+    try {
+        const auto response = json::parse(buffer, buffer + count);
+        const int discoveredPort = response.value("signal_port", 0);
+        if (response.value("type", "") != "OPENARM_SERVER" ||
+            response.value("version", 0) != 1 ||
+            response.value("nonce", uint64_t{0}) != nonce ||
+            discoveredPort <= 0 || discoveredPort > 65535) {
+            return false;
+        }
+        char sourceAddress[INET_ADDRSTRLEN]{};
+        if (!inet_ntop(AF_INET, &source.sin_addr, sourceAddress, sizeof(sourceAddress))) {
+            return false;
+        }
+        *host = sourceAddress;
+        *signalPort = static_cast<uint16_t>(discoveredPort);
+        {
+            std::lock_guard lock(host_mutex_);
+            host_ = *host;
+            port_ = *signalPort;
+        }
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "OpenArmRTC",
+            "discovered OpenArm server %s:%u",
+            host->c_str(),
+            *signalPort);
+        return true;
+    } catch (const std::exception& error) {
+        __android_log_print(
+            ANDROID_LOG_WARN, "OpenArmRTC", "discovery response: %s", error.what());
+        return false;
+    }
+}
 
 void RtcTransport::SetCodecConfig(const uint8_t* data, size_t size) {
     std::lock_guard lock(peer_mutex_);
@@ -114,12 +200,26 @@ void RtcTransport::HandleSignal(const std::string& line) {
 
 void RtcTransport::SignalLoop() {
     while (!stopping_) {
+        std::string host;
+        uint16_t signalPort = 0;
+        if (!DiscoverServer(&host, &signalPort)) {
+            std::this_thread::sleep_for(1s);
+            continue;
+        }
         int fd = socket(AF_INET, SOCK_STREAM, 0);
-        sockaddr_in address{}; address.sin_family = AF_INET; address.sin_port = htons(port_);
-        inet_pton(AF_INET, host_.c_str(), &address.sin_addr);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_port = htons(signalPort);
+        inet_pton(AF_INET, host.c_str(), &address.sin_addr);
         if (fd < 0 || connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
             if (fd >= 0) close(fd); std::this_thread::sleep_for(1s); continue;
         }
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "OpenArmRTC",
+            "signaling connected %s:%u",
+            host.c_str(),
+            signalPort);
         { std::lock_guard lock(signal_mutex_); signal_socket_ = fd; }
         SendSignal(json{{"type", "sender-ready"}}.dump());
         std::string buffer;

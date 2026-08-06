@@ -262,7 +262,10 @@ class Teleop:
             port=int(os.environ.get("PICO_STEREO_TCP_PORT", "8091"))
         )
         self.__pico_rtc_signaling = PicoRtcSignaling(
-            port=int(os.environ.get("PICO_STEREO_SIGNAL_PORT", "8092"))
+            port=int(os.environ.get("PICO_STEREO_SIGNAL_PORT", "8092")),
+            discovery_port=int(
+                os.environ.get("PICO_STEREO_DISCOVERY_PORT", "8093")
+            ),
         )
 
         self.robot_vis: Optional[RobotVisModule] = None

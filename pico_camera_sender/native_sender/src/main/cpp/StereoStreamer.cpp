@@ -15,7 +15,6 @@
 #include <cstring>
 
 namespace {
-constexpr char kHost[] = "192.168.50.86";
 constexpr uint16_t kPort = 8091;
 constexpr uint8_t kConfigFlag = 1;
 constexpr uint8_t kKeyFrameFlag = 2;
@@ -226,6 +225,8 @@ bool StereoStreamer::ConnectIfNeeded() {
     const int64_t now = MonotonicUs();
     if (now < next_connect_us_) return false;
     next_connect_us_ = now + 1000000;
+    const std::string host = rtc_.ServerHost();
+    if (host.empty()) return false;
     socket_ = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_ < 0) return false;
     int enabled = 1;
@@ -237,12 +238,17 @@ bool StereoStreamer::ConnectIfNeeded() {
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(kPort);
-    inet_pton(AF_INET, kHost, &address.sin_addr);
+    inet_pton(AF_INET, host.c_str(), &address.sin_addr);
     if (connect(socket_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
         CloseSocket();
         return false;
     }
-    __android_log_print(ANDROID_LOG_ERROR, "OpenArmStereo", "connected to %s:%u", kHost, kPort);
+    __android_log_print(
+        ANDROID_LOG_ERROR,
+        "OpenArmStereo",
+        "connected to %s:%u",
+        host.c_str(),
+        kPort);
     return true;
 }
 

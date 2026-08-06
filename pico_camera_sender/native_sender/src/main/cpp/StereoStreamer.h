@@ -49,5 +49,5 @@ private:
     bool rtc_was_streaming_{false};
     std::vector<uint8_t> nv12_;
     std::vector<uint8_t> codec_config_;
-    RtcTransport rtc_{"192.168.50.86", 8092};
+    RtcTransport rtc_{8092, 8093};
 };

@@ -11,8 +11,14 @@ from typing import Any
 
 
 class PicoRtcSignaling:
-    def __init__(self, host: str = "0.0.0.0", port: int = 8092) -> None:
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 8092,
+        discovery_port: int = 8093,
+    ) -> None:
         self.host, self.port = host, port
+        self.discovery_port = discovery_port
         self._condition = threading.Condition()
         self._sender_lock = threading.Lock()
         self._sender: socket.socket | None = None
@@ -21,13 +27,25 @@ class PicoRtcSignaling:
         self._sequence = 0
         self._stopping = threading.Event()
         self._server: socket.socket | None = None
+        self._discovery_server: socket.socket | None = None
         self._thread = threading.Thread(target=self._serve, name="pico-rtc-signal", daemon=True)
+        self._discovery_thread = threading.Thread(
+            target=self._serve_discovery,
+            name="pico-rtc-discovery",
+            daemon=True,
+        )
         self._thread.start()
+        self._discovery_thread.start()
 
     def status(self) -> dict[str, Any]:
         with self._sender_lock:
-            return {"sender_connected": self._sender is not None, "sender_address": self._sender_address,
-                    "signaling_port": self.port, "media_path": "ultra-to-pico4-webrtc-direct"}
+            return {
+                "sender_connected": self._sender is not None,
+                "sender_address": self._sender_address,
+                "signaling_port": self.port,
+                "discovery_port": self.discovery_port,
+                "media_path": "ultra-to-pico4-webrtc-direct",
+            }
 
     def _publish(self, event: dict[str, Any]) -> None:
         with self._condition:
@@ -82,7 +100,9 @@ class PicoRtcSignaling:
     def _serve(self) -> None:
         server = socket.socket(); self._server = server
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server.bind((self.host, self.port)); server.listen(1); server.settimeout(1)
+        server.bind((self.host, self.port))
+        self.port = server.getsockname()[1]
+        server.listen(1); server.settimeout(1)
         try:
             while not self._stopping.is_set():
                 try: connection, address = server.accept()
@@ -95,10 +115,57 @@ class PicoRtcSignaling:
                     except OSError: pass
         finally: server.close()
 
+    def _serve_discovery(self) -> None:
+        server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._discovery_server = server
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((self.host, self.discovery_port))
+        # Preserve the kernel-selected port when tests request port 0.
+        self.discovery_port = server.getsockname()[1]
+        server.settimeout(1)
+        try:
+            while not self._stopping.is_set():
+                try:
+                    payload, address = server.recvfrom(4096)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                try:
+                    request = json.loads(payload)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if (
+                    not isinstance(request, dict)
+                    or request.get("type") != "OPENARM_DISCOVER"
+                    or request.get("version") != 1
+                    or "nonce" not in request
+                ):
+                    continue
+                response = json.dumps(
+                    {
+                        "type": "OPENARM_SERVER",
+                        "version": 1,
+                        "nonce": request["nonce"],
+                        "name": socket.gethostname(),
+                        "signal_port": self.port,
+                    },
+                    separators=(",", ":"),
+                ).encode()
+                try:
+                    server.sendto(response, address)
+                except OSError:
+                    pass
+        finally:
+            server.close()
+
     def stop(self) -> None:
         self._stopping.set()
         if self._server:
             try: self._server.close()
+            except OSError: pass
+        if self._discovery_server:
+            try: self._discovery_server.close()
             except OSError: pass
         with self._sender_lock:
             if self._sender:
@@ -106,3 +173,4 @@ class PicoRtcSignaling:
                 except OSError: pass
         with self._condition: self._condition.notify_all()
         self._thread.join(timeout=2)
+        self._discovery_thread.join(timeout=2)
