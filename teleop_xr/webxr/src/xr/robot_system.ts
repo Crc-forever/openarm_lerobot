@@ -234,7 +234,7 @@ export class RobotModelSystem extends createSystem({}) {
 				robot.rotation.set(rx, ry, rz);
 			}
 
-			const scale = data.model_scale || 1.0;
+			const scale = (data.model_scale || 1.0) * 0.5;
 			robot.scale.set(scale, scale, scale);
 
 			tiltNode.add(robot);
