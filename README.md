@@ -6,7 +6,7 @@ Pico VR 控制双臂 OpenArm，并用 LeRobot 同步采集双臂、夹爪和四�
 
 - 推荐 Ubuntu 22.04 x86_64 + ROS 2 Humble（Aurora930 配套组合）；
 - 同时兼容 Ubuntu 24.04 x86_64 + ROS 2 Jazzy；
-- NVIDIA 显卡及可用驱动；
+- NVIDIA 显卡及与显卡匹配的可用驱动；
 - 两路 SocketCAN：左臂 `can0`，右臂 `can1`；
 - Python 3.12。
 
@@ -22,12 +22,18 @@ sudo apt install -y \
 然后在仓库根目录执行：
 
 ```bash
-./scripts/install.sh
+OPENARM_TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 \
+  ./scripts/install.sh
 ```
 
-脚本会创建仓库内的 `.venv`，安装固定版本的 LeRobot、JAX、PyRoki 和
-TeleopXR，并为本机生成 HTTPS 证书。以后不需要激活虚拟环境，直接运行
+上面的 CUDA 12.8 轮子适用于 RTX 50 系显卡；其他机器通过
+`OPENARM_TORCH_INDEX_URL` 选择与驱动匹配的 PyTorch 索引。脚本会创建仓库内的
+`.venv`，从同级 `openarm_inference/lerobot_src` 安装经验证的 LeRobot 0.6.2，
+并安装 JAX、PyRoki 和 TeleopXR。以后不需要激活虚拟环境，直接运行
 `scripts/` 中的入口即可。
+
+统一工作区布局、5090 迁移和离线/联网安装边界详见
+[统一环境与 5090 部署](docs/统一环境与5090部署.md)。
 
 已有机器如果保留了原来的 Conda `lerobot` 环境，启动脚本会自动兼容：
 优先使用 `.venv`，不存在时使用 Conda 环境。
@@ -56,7 +62,8 @@ scripts/             安装、遥操作和采集入口
 teleop_xr/           Pico WebXR、OpenArm IK、控制与记录
 ```
 
-`data/`、`logs/`、`.venv/` 和 `.vendor/` 均不会提交到 Git。
+`data/`、`logs/`、`.venv/` 和 `.vendor/` 均不会提交到 Git。LeRobot 0.6.2
+源码归属于同级推理项目，遥控、数据采集和模型推理共用同一个 `.venv`。
 
 ## 数据采集额外环境
 

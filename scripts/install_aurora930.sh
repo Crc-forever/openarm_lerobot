@@ -30,6 +30,12 @@ ros_setup="$(openarm_ros_setup_path "$ros_distro")"
 
 mkdir -p "$WORKSPACE/src"
 find "$WORKSPACE/src" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+# Colcon/CMake caches contain absolute paths and cannot be copied between hosts.
+# Always rebuild these generated trees on the destination machine.
+for generated_dir in build install log; do
+  mkdir -p "$WORKSPACE/$generated_dir"
+  find "$WORKSPACE/$generated_dir" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+done
 tar -xzf "$ARCHIVE" \
   --exclude='*/.git' \
   --exclude='*/.git/*' \

@@ -58,13 +58,18 @@ if [[ -x "$python" ]] && env -u LD_LIBRARY_PATH "$python" - <<'PY' >"$preflight_
 from importlib.metadata import version
 import jax
 import torch
+from lerobot.policies.factory import get_policy_class
 
 if not torch.cuda.is_available():
     raise RuntimeError("Torch cannot access CUDA")
+if version("lerobot") != "0.6.2":
+    raise RuntimeError(f"Expected LeRobot 0.6.2, got {version('lerobot')}")
+get_policy_class("patch_policy")
 devices = jax.devices()
 if not any(device.platform in ("cuda", "gpu") for device in devices):
     raise RuntimeError(f"JAX has no CUDA device: {devices}")
 print(f"LeRobot {version('lerobot')}")
+print("Patch Policy available")
 print(f"Torch {torch.__version__}, CUDA={torch.cuda.is_available()}")
 print("JAX devices=" + ",".join(str(device) for device in devices))
 PY
